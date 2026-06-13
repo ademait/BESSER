@@ -1,4 +1,5 @@
 """Docker Compose generator — turns a UML DeploymentModel into docker-compose.yml."""
+import inspect
 import os
 import re
 
@@ -35,6 +36,54 @@ def _safe_service_name(name: str) -> str:
     s = s.lower()
     s = re.sub(r'[^a-z0-9]+', '_', s).strip('_')
     return s or 'unnamed'
+
+
+# v2 A2A — default system prompt when the Agent diagram carries no LLM-reply prompt.
+def _default_prompt(name: str, role: str) -> str:
+    if role == 'entry':
+        return (f"You are {name}, the human-facing coordinator of an agent swarm. "
+                f"Delegate the task to your team, then synthesize their results into "
+                f"one concise answer for the user.")
+    return (f"You are {name}, an agent in a collaborative swarm. Complete the task "
+            f"you are given concisely; if you received collaborator inputs, use them.")
+
+
+def _a2a_descriptor(agent, service_names: set) -> dict:
+    """Classify a baked agent for A2A wiring from its boundary states (plan §3/§4).
+
+    - `to_<peer>` / `from_<peer>` states name a peer; `_safe_service_name(suffix)`
+      is matched against the swarm's service names. Peers NOT in `service_names`
+      (e.g. a non-agentic `from_<Human>` handoff) are ignored — that's how the
+      entry stays the entry despite an inbound boundary (R3, DAG-exact).
+    - role = 'worker' iff it has at least one inbound peer that IS a service;
+      else 'entry' (human-facing).
+    - prompt = the first LLMReply prompt found on a non-boundary state, else a default.
+    """
+    to_peers, from_peers, prompt = [], [], None
+    for st in getattr(agent, 'states', []) or []:
+        nm = (getattr(st, 'name', '') or '')
+        if nm.startswith('to_'):
+            peer = _safe_service_name(nm[3:])
+            if peer in service_names:
+                to_peers.append(peer)
+        elif nm.startswith('from_'):
+            peer = _safe_service_name(nm[5:])
+            if peer in service_names:
+                from_peers.append(peer)
+        else:
+            body = getattr(st, 'body', None)
+            actions = getattr(body, 'actions', None) if body else None
+            if actions and actions[0].__class__.__name__ == 'LLMReply':
+                prompt = getattr(actions[0], 'prompt', None) or prompt
+    role = 'worker' if from_peers else 'entry'
+    name = getattr(agent, 'name', 'Agent')
+    return {
+        'role': role,
+        'agent_id': _safe_service_name(name),
+        'to_peers': sorted(set(to_peers)),
+        'prompt': prompt or _default_prompt(name, role),
+        'greeting': f"Hi! I'm {name}. Give me a task for the team.",
+    }
 
 
 class DockerComposeGenerator(GeneratorInterface):
@@ -96,6 +145,30 @@ class DockerComposeGenerator(GeneratorInterface):
             self.build_generation_path(file_name="docker-compose.yml")
         )
         dockerfile_tpl = env.get_template("Dockerfile.j2")
+
+        # v2 A2A — the set of swarm service names, so peer boundary states can be
+        # resolved to real services (and non-service handoffs like `from_<Human>`
+        # ignored). Mirrors the LOCAL+resolvable filter used in the bake loop.
+        service_names = {
+            _safe_service_name(a.name)
+            for a in self.model.all_artifacts()
+            if a.locality == Locality.LOCAL
+            and getattr(a, "agent_model_ref", None)
+            and self.agent_models_by_id.get(a.agent_model_ref) is not None
+        }
+        # The A2A agent template lives next to the generic BAF template
+        # (agents/templates), not in this generator's templates dir, so it needs
+        # its own loader rather than the docker_compose `env` above.
+        agent_tpl_dir = os.path.join(
+            os.path.dirname(inspect.getfile(BAFGenerator)), "templates"
+        )
+        a2a_env = Environment(
+            loader=FileSystemLoader(agent_tpl_dir),
+            trim_blocks=True,
+            lstrip_blocks=True,
+        )
+        a2a_tpl = a2a_env.get_template("baf_a2a_agent_template.py.j2")
+
         for art in self.model.all_artifacts():
             if art.locality != Locality.LOCAL:
                 continue
@@ -113,7 +186,19 @@ class DockerComposeGenerator(GeneratorInterface):
             os.makedirs(ctx_dir, exist_ok=True)
             # BAF agent.py + config.yaml into the build context.
             BAFGenerator(agent, output_dir=ctx_dir).generate()
-            # Dockerfile referencing the agent script BAFGenerator just wrote.
+
+            # v2 A2A — if this agent has boundary states (it participates in the
+            # swarm topology), OVERWRITE the generic agent.py with the A2A render.
+            descriptor = _a2a_descriptor(agent, service_names)
+            has_boundaries = bool(descriptor['to_peers']) or descriptor['role'] == 'worker'
+            if has_boundaries:
+                with open(os.path.join(ctx_dir, f"{agent.name}.py"),
+                          mode="w", encoding="utf-8") as f:
+                    f.write(a2a_tpl.render(agent=agent, a2a=descriptor))
+                print(f"[docker_compose] A2A-wired ({descriptor['role']}): {svc_name} "
+                      f"-> to_peers={descriptor['to_peers']}")
+
+            # Dockerfile referencing the agent script (name unchanged).
             agent_script = f"{agent.name}.py"
             with open(os.path.join(ctx_dir, "Dockerfile"),
                       mode="w", encoding="utf-8") as f:
