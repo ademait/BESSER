@@ -668,7 +668,23 @@ async def _handle_deployment_project_generation(
             agent_models_by_id=agent_models_by_id,
         )
         await asyncio.to_thread(generator_instance.generate)
-        return _create_zip_response(temp_dir, generator_type)
+
+        # Build a ZIP whose filename carries the project name so the browser
+        # download is identifiable (e.g. "MyProject-docker-compose.zip").
+        safe_project = re.sub(r'[^\w.-]', '_', input_data.name).strip('_') or 'project'
+        zip_filename = f"{safe_project}-docker-compose.zip"
+        zip_buffer = io.BytesIO()
+        with zipfile.ZipFile(zip_buffer, "w", zipfile.ZIP_DEFLATED) as zf:
+            for root, _, files in os.walk(temp_dir):
+                for fname in files:
+                    fp = os.path.join(root, fname)
+                    zf.write(fp, os.path.relpath(fp, temp_dir))
+        zip_buffer.seek(0)
+        return StreamingResponse(
+            zip_buffer,
+            media_type="application/zip",
+            headers={"Content-Disposition": f'attachment; filename="{zip_filename}"'},
+        )
 
 
 def _streaming_zip(zip_buffer: io.BytesIO, file_name: str) -> StreamingResponse:
