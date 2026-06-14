@@ -64,15 +64,14 @@ a2a_platform = agent.use_a2a_platform()
 
 async def handle(**params):
     task = params.get("message", "")
+    reply = reply_llm.predict(message=task, session=None, system_message=SYSTEM_PROMPT)
 {% if a2a.to_peers %}
-    parts = _fanout(task)
-    ctx = "\n\n".join(f"[{name}]\n{txt}" for name, txt in parts)
-    user_msg = f"{task}\n\nInputs from collaborators:\n{ctx}" if ctx else task
+    parts = _fanout(reply)
+    peer_ctx = "\n\n".join(f"[{name}]\n{txt}" for name, txt in parts)
+    return {"reply": f"{reply}\n\nPeer feedback:\n{peer_ctx}" if peer_ctx else reply}
 {% else %}
-    user_msg = task
-{% endif %}
-    reply = reply_llm.predict(message=user_msg, session=None, system_message=SYSTEM_PROMPT)
     return {"reply": reply}
+{% endif %}
 
 a2a_platform.router.register("handle", handle)
 # BAF runs train() on agent.run(), which needs exactly one initial state even for an
