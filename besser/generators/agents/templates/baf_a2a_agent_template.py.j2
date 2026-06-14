@@ -62,8 +62,8 @@ def _fanout(task):
 # ── Headless worker: expose an A2A server; handle() runs the LLM (+ optional fan-out) ──
 a2a_platform = agent.use_a2a_platform()
 
-async def handle(method_params: dict):
-    task = (method_params or {}).get("message", "")
+async def handle(**params):
+    task = params.get("message", "")
 {% if a2a.to_peers %}
     parts = _fanout(task)
     ctx = "\n\n".join(f"[{name}]\n{txt}" for name, txt in parts)
@@ -75,6 +75,12 @@ async def handle(method_params: dict):
     return {"reply": reply}
 
 a2a_platform.router.register("handle", handle)
+# BAF runs train() on agent.run(), which needs exactly one initial state even for an
+# A2A-only worker whose real entry is handle() above (R5).
+idle = agent.new_state('idle', initial=True)
+def idle_body(session: Session):
+    pass
+idle.set_body(idle_body)
 {% else %}
 # ── Entry (human-facing): websocket UI; work state fans out + synthesizes (plan §3) ──
 platform = agent.use_websocket_platform(use_ui=True)
