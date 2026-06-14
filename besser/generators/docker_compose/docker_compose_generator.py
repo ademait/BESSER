@@ -8,7 +8,6 @@ from jinja2 import Environment, FileSystemLoader
 from besser.BUML.metamodel.uml_deployment import (
     Artifact,
     CommunicationPath,
-    DeploymentDependency,
     DeploymentModel,
     DeploymentRelation,
     Locality,
@@ -130,7 +129,8 @@ class DockerComposeGenerator(GeneratorInterface):
             trim_blocks=True,
             lstrip_blocks=True,
         )
-        services, networks = self._build_view(self.model)
+        entry_services = self._compute_entry_services()
+        services, networks = self._build_view(self.model, entry_services)
         template = env.get_template("docker-compose.yml.j2")
         with open(file_path, mode="w", encoding="utf-8") as f:
             f.write(template.render(services=services, networks=networks))
@@ -217,7 +217,39 @@ class DockerComposeGenerator(GeneratorInterface):
                 f.write(dockerfile_tpl.render(agent_script=agent_script))
             print(f"[docker_compose] baked build context: {ctx_dir}")
 
-    def _build_view(self, model: DeploymentModel) -> tuple:
+    def _compute_entry_services(self) -> set:
+        """Return the set of service names whose agent has role='entry'.
+
+        Mirrors the LOCAL+resolvable filter in _bake_agent_contexts(). When
+        agent_models_by_id is empty (single-diagram path) returns an empty set.
+        """
+        if not self.agent_models_by_id:
+            return set()
+        service_names = {
+            _safe_service_name(a.name)
+            for a in self.model.all_artifacts()
+            if a.locality == Locality.LOCAL
+            and getattr(a, 'agent_model_ref', None)
+            and self.agent_models_by_id.get(a.agent_model_ref) is not None
+        }
+        result: set = set()
+        for art in self.model.all_artifacts():
+            if art.locality != Locality.LOCAL:
+                continue
+            ref = getattr(art, 'agent_model_ref', None)
+            if not ref:
+                continue
+            agent = self.agent_models_by_id.get(ref)
+            if agent is None:
+                continue
+            svc = _safe_service_name(art.name)
+            descriptor = _a2a_descriptor(agent, service_names, self_service=svc)
+            if descriptor['role'] == 'entry':
+                result.add(svc)
+        return result
+
+    def _build_view(self, model: DeploymentModel,
+                    entry_services: set = None) -> tuple:
         """Resolve the metamodel into ordered dicts the template renders.
 
         Doing the graph walk here keeps the template declarative and lets tests
@@ -285,24 +317,26 @@ class DockerComposeGenerator(GeneratorInterface):
                             or tgt_id in art_nodes_map[id(art)]):
                         _add_net(id(art), link)
 
-        # ----- Pass 5: depends_on from DeploymentDependency -----------------
-        art_safe = {id(a): _safe_service_name(a.name) for a in all_artifacts}
-        art_depends: dict = {id(a): [] for a in all_artifacts}
-        for rel in all_rels:
-            if isinstance(rel, DeploymentDependency):
-                if not (isinstance(rel.source, Artifact)
-                        and isinstance(rel.target, Artifact)):
-                    continue
-                src_key = id(rel.source)
-                if src_key in art_depends:
-                    tgt_svc = art_safe.get(id(rel.target),
-                                           _safe_service_name(rel.target.name))
-                    if tgt_svc not in art_depends[src_key]:
-                        art_depends[src_key].append(tgt_svc)
-
         # ----- Build service dicts -------------------------------------------
+        # Capability/resource stereotype tokens — these artifacts represent
+        # externally hosted services (LLM API, vector DB, RAG store), not
+        # deployable containers.
+        _CAP_TOKENS = frozenset(['llm', 'db', 'rag', 'tool', 'skill'])
+        _entry = entry_services or set()
+
         services = []
         for art in all_artifacts:
+            # D12 synthetic artifacts (created from WME DeploymentComponent)
+            # have art.manifests != [] — they are logical component projections
+            # that duplicate the physical artifact's service name.
+            if art.manifests:
+                continue
+
+            # Capability/resource artifacts are hosted externally, not built
+            # as Docker images.
+            if any(t in _CAP_TOKENS for t in art.stereotypes):
+                continue
+
             svc_name = _safe_service_name(art.name)
             art_key = id(art)
 
@@ -325,8 +359,8 @@ class DockerComposeGenerator(GeneratorInterface):
                 'image': image,
                 'is_hybrid': is_hybrid,
                 'networks': art_nets.get(art_key, []),
-                'depends_on': art_depends.get(art_key, []),
                 'replicas': art_replicas.get(art_key),
+                'ports': ['5001:5000', '8765:8765'] if svc_name in _entry else [],
                 'stereotypes': ', '.join(art.stereotypes) if art.stereotypes else None,
                 'manifests': ', '.join(art.manifests) if art.manifests else None,
             })
