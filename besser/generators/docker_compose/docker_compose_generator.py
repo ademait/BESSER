@@ -48,7 +48,7 @@ def _default_prompt(name: str, role: str) -> str:
             f"you are given concisely; if you received collaborator inputs, use them.")
 
 
-def _a2a_descriptor(agent, service_names: set) -> dict:
+def _a2a_descriptor(agent, service_names: set, self_service: str = None) -> dict:
     """Classify a baked agent for A2A wiring from its boundary states (plan §3/§4).
 
     - `to_<peer>` / `from_<peer>` states name a peer; `_safe_service_name(suffix)`
@@ -59,16 +59,25 @@ def _a2a_descriptor(agent, service_names: set) -> dict:
       else 'entry' (human-facing).
     - prompt = the first LLMReply prompt found on a non-boundary state, else a default.
     """
+    # item 22 — this agent's own service id, so a self-referential `from_<self>`
+    # boundary (the WME lane→Agent derivation mislabels the lane's own start/handoff
+    # with the lane's own name) does NOT count as an inbound peer. `self_service` is
+    # the artifact's safe service name (passed by the bake loop); fall back to the
+    # agent name's safe form when called standalone (e.g. a unit test).
+    self_id = self_service or _safe_service_name(getattr(agent, 'name', 'Agent'))
     to_peers, from_peers, prompt = [], [], None
     for st in getattr(agent, 'states', []) or []:
         nm = (getattr(st, 'name', '') or '')
         if nm.startswith('to_'):
             peer = _safe_service_name(nm[3:])
-            if peer in service_names:
+            if peer in service_names and peer != self_id:
                 to_peers.append(peer)
         elif nm.startswith('from_'):
             peer = _safe_service_name(nm[5:])
-            if peer in service_names:
+            # Worker iff a `from_<peer>` resolves to a DIFFERENT swarm service.
+            # `peer == self_id` is the self-referential `from_<self>` (item 22) and
+            # must be ignored — otherwise the entry is wrongly demoted to a worker.
+            if peer in service_names and peer != self_id:
                 from_peers.append(peer)
         else:
             body = getattr(st, 'body', None)
@@ -189,7 +198,10 @@ class DockerComposeGenerator(GeneratorInterface):
 
             # v2 A2A — if this agent has boundary states (it participates in the
             # swarm topology), OVERWRITE the generic agent.py with the A2A render.
-            descriptor = _a2a_descriptor(agent, service_names)
+            # item 22 — pass THIS service's name so a `from_<self>` boundary can't
+            # demote the entry to a worker (the agent_id and the service line up via
+            # _safe_service_name, but pass it explicitly to be robust).
+            descriptor = _a2a_descriptor(agent, service_names, self_service=svc_name)
             has_boundaries = bool(descriptor['to_peers']) or descriptor['role'] == 'worker'
             if has_boundaries:
                 with open(os.path.join(ctx_dir, f"{agent.name}.py"),
