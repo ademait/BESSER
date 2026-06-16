@@ -25,6 +25,9 @@ services:
 {% if svc.networks %}
     networks: [{{ svc.networks | join(", ") }}]
 {% endif %}
+{% if svc.depends_on %}
+    depends_on: [{{ svc.depends_on | join(", ") }}]
+{% endif %}
 {% if svc.replicas %}
     deploy:
       replicas: {{ svc.replicas }}

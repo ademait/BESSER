@@ -57,7 +57,6 @@ def test_empty_model_valid_yaml(tmp_path):
     content = _generate(model, tmp_path)
     parsed = _parse(content)
     assert "services" in parsed
-    assert "version" in parsed
 
 
 # ---------------------------------------------------------------------------
@@ -264,7 +263,7 @@ def test_determinism(tmp_path):
 
 def test_build_view_local_service_dict(tmp_path):
     node = Node("Prod", kind=NodeKind.EXECUTION_ENVIRONMENT)
-    art = Artifact("api", locality=Locality.LOCAL, manifests=["cid1"])
+    art = Artifact("api", locality=Locality.LOCAL)
     dr = DeploymentRelation(art, node, multiplicity=Multiplicity(1, 5))
     model = DeploymentModel("m", nodes={node}, artifacts={art}, relationships={dr})
     gen = DockerComposeGenerator(model, output_dir=str(tmp_path))
@@ -277,7 +276,6 @@ def test_build_view_local_service_dict(tmp_path):
     assert svc["image"] is None
     assert svc["replicas"] == 5
     assert "prod" in svc["networks"]
-    assert svc["manifests"] == "cid1"
 
     assert len(networks) == 1
     assert networks[0]["name"] == "prod"

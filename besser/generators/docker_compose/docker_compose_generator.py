@@ -8,6 +8,7 @@ from jinja2 import Environment, FileSystemLoader
 from besser.BUML.metamodel.uml_deployment import (
     Artifact,
     CommunicationPath,
+    DeploymentDependency,
     DeploymentModel,
     DeploymentRelation,
     Locality,
@@ -299,7 +300,18 @@ class DockerComposeGenerator(GeneratorInterface):
                     if mult.max > 1:
                         art_replicas[src_key] = mult.max
 
-        # ----- Pass 4: CommunicationPath → bridging networks ----------------
+        # ----- Pass 4a: DeploymentDependency → depends_on -------------------
+        # source depends_on target (source must start after target is running).
+        art_depends: dict = {id(a): [] for a in all_artifacts}
+        for rel in all_rels:
+            if isinstance(rel, DeploymentDependency):
+                if isinstance(rel.source, Artifact) and isinstance(rel.target, Artifact):
+                    svc_target = _safe_service_name(rel.target.name)
+                    deps = art_depends[id(rel.source)]
+                    if svc_target not in deps:
+                        deps.append(svc_target)
+
+        # ----- Pass 5: CommunicationPath → bridging networks ----------------
         cp_nets: list = []
         seen_cp: set = set()
         for rel in all_rels:
@@ -360,6 +372,7 @@ class DockerComposeGenerator(GeneratorInterface):
                 'is_hybrid': is_hybrid,
                 'networks': art_nets.get(art_key, []),
                 'replicas': art_replicas.get(art_key),
+                'depends_on': art_depends.get(art_key, []),
                 'ports': ['5001:5000', '8765:8765'] if svc_name in _entry else [],
                 'stereotypes': ', '.join(art.stereotypes) if art.stereotypes else None,
                 'manifests': ', '.join(art.manifests) if art.manifests else None,
