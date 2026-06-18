@@ -41,6 +41,7 @@ from besser.utilities.web_modeling_editor.backend.models import (
 from besser.utilities.web_modeling_editor.backend.services.converters import (
     process_class_diagram,
     process_agent_diagram,
+    annotate_agent_with_a2a,
     process_object_diagram,
     process_gui_diagram,
     process_quantum_diagram,
@@ -660,6 +661,11 @@ async def _handle_deployment_project_generation(
                 continue
             agent_model = process_agent_diagram(entry_dict)
             if agent_model is not None:
+                # Item 10 — stash the A2A wire tags (a2a:in/a2a:out) parsed from the
+                # raw AgentDiagram JSON onto agent._a2a, so the docker_compose bake can
+                # prefer them over the legacy to_/from_ state-name convention. No-op when
+                # the diagram carries no a2a: tag (legacy agents stay byte-identical).
+                annotate_agent_with_a2a(agent_model, entry_dict)
                 agent_models_by_id[diagram_id] = agent_model
 
         generator_class = generator_info.generator_class

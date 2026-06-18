@@ -493,3 +493,168 @@ def test_baking_skips_unresolvable_ref(tmp_path):
 
     assert (tmp_path / "docker-compose.yml").exists()
     assert not (tmp_path / "ghost" / "Dockerfile").exists()
+
+
+# ---------------------------------------------------------------------------
+# item 10 — tag-driven A2A bake (per-kind framing rendered into <svc>/<Agent>.py)
+# ---------------------------------------------------------------------------
+
+def _agent_with_a2a(name, outbound=None, inbound=None):
+    """Minimal bakeable BUML Agent carrying the WME-tag side-map (agent._a2a)."""
+    from besser.BUML.metamodel.state_machine.agent import Agent, WebSocketPlatform
+    agent = Agent(name)
+    agent.platforms.append(WebSocketPlatform())
+    agent.new_state("initial", initial=True)
+    if outbound is not None or inbound is not None:
+        agent._a2a = {"outbound": outbound or [], "inbound": inbound or []}
+    return agent
+
+
+def _two_agent_swarm_model():
+    """Deployment model with two LOCAL agentic artifacts: AgentSupervisor → AgentCoder."""
+    node = Node("Cluster", kind=NodeKind.EXECUTION_ENVIRONMENT)
+    sup = Artifact("AgentSupervisor", locality=Locality.LOCAL)
+    sup.agent_model_ref = "sup"
+    coder = Artifact("AgentCoder", locality=Locality.LOCAL)
+    coder.agent_model_ref = "coder"
+    dr1 = DeploymentRelation(sup, node)
+    dr2 = DeploymentRelation(coder, node)
+    return DeploymentModel("m", nodes={node}, artifacts={sup, coder},
+                           relationships={dr1, dr2})
+
+
+def test_tag_bake_delegate_framing(tmp_path):
+    """An entry agent with a delegates out-edge bakes the delegate framing + _fanout."""
+    model = _two_agent_swarm_model()
+    supervisor = _agent_with_a2a("AgentSupervisor", outbound=[
+        {"peer": "AgentCoder", "ref": "coder", "order": 1, "kind": "delegates",
+         "state": "coordinate"},
+    ])
+    coder = _agent_with_a2a("AgentCoder", inbound=[
+        {"peer": "AgentSupervisor", "ref": "sup", "order": 9999, "kind": "delegates"},
+    ])
+
+    gen = DockerComposeGenerator(
+        model, output_dir=str(tmp_path),
+        agent_models_by_id={"sup": supervisor, "coder": coder},
+    )
+    gen.generate()
+
+    sup_py = (tmp_path / "agent_supervisor" / "AgentSupervisor.py").read_text(encoding="utf-8")
+    assert "Delegated subtask" in sup_py            # delegates framing string
+    assert "_fanout" in sup_py
+    assert '_peer_replica_urls("agent_coder")' in sup_py
+    # entry → websocket UI, not a headless worker
+    assert "use_websocket_platform" in sup_py
+
+    coder_py = (tmp_path / "agent_coder" / "AgentCoder.py").read_text(encoding="utf-8")
+    assert "use_a2a_platform" in coder_py           # inbound → worker server
+
+
+def test_tag_bake_supervises_framing(tmp_path):
+    """A supervises out-edge bakes the review framing string."""
+    model = _two_agent_swarm_model()
+    supervisor = _agent_with_a2a("AgentSupervisor", outbound=[
+        {"peer": "AgentCoder", "ref": "coder", "order": 1, "kind": "supervises",
+         "state": "coordinate"},
+    ])
+    coder = _agent_with_a2a("AgentCoder", inbound=[
+        {"peer": "AgentSupervisor", "ref": "sup", "order": 9999, "kind": "supervises"},
+    ])
+    gen = DockerComposeGenerator(
+        model, output_dir=str(tmp_path),
+        agent_models_by_id={"sup": supervisor, "coder": coder},
+    )
+    gen.generate()
+    sup_py = (tmp_path / "agent_supervisor" / "AgentSupervisor.py").read_text(encoding="utf-8")
+    assert "Review the following work" in sup_py
+
+
+def test_tag_bake_plain_channel_passthrough(tmp_path):
+    """A plain-channel out-edge (kind=None) bakes pass-through framing, no swarm-role text."""
+    model = _two_agent_swarm_model()
+    supervisor = _agent_with_a2a("AgentSupervisor", outbound=[
+        {"peer": "AgentCoder", "ref": "coder", "order": 1, "kind": None,
+         "state": "coordinate"},
+    ])
+    coder = _agent_with_a2a("AgentCoder", inbound=[
+        {"peer": "AgentSupervisor", "ref": "sup", "order": 9999, "kind": None},
+    ])
+    gen = DockerComposeGenerator(
+        model, output_dir=str(tmp_path),
+        agent_models_by_id={"sup": supervisor, "coder": coder},
+    )
+    gen.generate()
+    sup_py = (tmp_path / "agent_supervisor" / "AgentSupervisor.py").read_text(encoding="utf-8")
+    # The plain-channel peer's _fanout lookup uses the "plain" frame key. The framing
+    # strings themselves all live in the _KIND_FRAME dict literal (always present); the
+    # discriminator is which key the per-peer lookup line selects.
+    assert '_KIND_FRAME["plain"]' in sup_py
+    assert '_KIND_FRAME["delegates"]' not in sup_py
+
+
+def test_tag_baked_agent_py_is_valid_python(tmp_path):
+    """The baked A2A agent.py must parse (compile) — code generates + parses (not a live run)."""
+    import ast
+    model = _two_agent_swarm_model()
+    supervisor = _agent_with_a2a("AgentSupervisor", outbound=[
+        {"peer": "AgentCoder", "ref": "coder", "order": 1, "kind": "delegates",
+         "state": "coordinate"},
+    ])
+    coder = _agent_with_a2a("AgentCoder", inbound=[
+        {"peer": "AgentSupervisor", "ref": "sup", "order": 9999, "kind": "delegates"},
+    ])
+    gen = DockerComposeGenerator(
+        model, output_dir=str(tmp_path),
+        agent_models_by_id={"sup": supervisor, "coder": coder},
+    )
+    gen.generate()
+    for svc, fname in (("agent_supervisor", "AgentSupervisor.py"),
+                       ("agent_coder", "AgentCoder.py")):
+        src = (tmp_path / svc / fname).read_text(encoding="utf-8")
+        ast.parse(src)          # raises SyntaxError if the template emitted broken code
+
+
+def test_convention_bake_unchanged_back_compat(tmp_path):
+    """Back-compat (§10): an agent with NO _a2a but to_/from_ states still bakes via the
+    legacy path and renders the plain-channel fan-out (no kind framing strings)."""
+    node = Node("Cluster", kind=NodeKind.EXECUTION_ENVIRONMENT)
+    sup = Artifact("Supervisor", locality=Locality.LOCAL)
+    sup.agent_model_ref = "sup"
+    coder = Artifact("Coder", locality=Locality.LOCAL)
+    coder.agent_model_ref = "coder"
+    dr1 = DeploymentRelation(sup, node)
+    dr2 = DeploymentRelation(coder, node)
+    model = DeploymentModel("m", nodes={node}, artifacts={sup, coder},
+                            relationships={dr1, dr2})
+
+    # legacy convention: boundary states, NO _a2a attribute
+    from besser.BUML.metamodel.state_machine.agent import Agent, WebSocketPlatform
+
+    def _legacy(name, states):
+        a = Agent(name)
+        a.platforms.append(WebSocketPlatform())
+        a.new_state(states[0], initial=True)
+        for s in states[1:]:
+            a.new_state(s)
+        return a
+
+    supervisor = _legacy("Supervisor", ["coordinate", "to_coder"])
+    coder_agent = _legacy("Coder", ["write_code", "from_supervisor"])
+    assert not hasattr(supervisor, "_a2a")
+
+    gen = DockerComposeGenerator(
+        model, output_dir=str(tmp_path),
+        agent_models_by_id={"sup": supervisor, "coder": coder_agent},
+    )
+    gen.generate()
+
+    sup_py = (tmp_path / "supervisor" / "Supervisor.py").read_text(encoding="utf-8")
+    # legacy renders plain-channel (kind=None shim) → per-peer lookup uses the "plain"
+    # frame key, never a swarm-role kind.
+    assert '_KIND_FRAME["plain"]' in sup_py
+    assert '_KIND_FRAME["delegates"]' not in sup_py
+    assert '_peer_replica_urls("coder")' in sup_py
+    # role split preserved: coder has an inbound from_supervisor → worker server
+    coder_py = (tmp_path / "coder" / "Coder.py").read_text(encoding="utf-8")
+    assert "use_a2a_platform" in coder_py

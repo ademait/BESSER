@@ -86,10 +86,77 @@ def _a2a_descriptor(agent, service_names: set, self_service: str = None) -> dict
                 prompt = getattr(actions[0], 'prompt', None) or prompt
     role = 'worker' if from_peers else 'entry'
     name = getattr(agent, 'name', 'Agent')
+    sorted_peers = sorted(set(to_peers))
     return {
         'role': role,
         'agent_id': _safe_service_name(name),
-        'to_peers': sorted(set(to_peers)),
+        'to_peers': sorted_peers,
+        # item 10 — `peers` shim so the kind-aware template is single-path. The legacy
+        # convention has no `kind`, so every peer renders as a plain channel (kind=None),
+        # i.e. exactly today's broadcast fan-out behavior.
+        'peers': [{'service': p, 'kind': None, 'order': i, 'state': ''}
+                  for i, p in enumerate(sorted_peers)],
+        'source': 'convention',
+        'prompt': prompt or _default_prompt(name, role),
+        'greeting': f"Hi! I'm {name}. Give me a task for the team.",
+    }
+
+
+def _resolve_peer_service(edge: dict, service_names: set):
+    """Map an a2a edge's (ref|peer) to a swarm service name, else None.
+
+    `ref` (the peer's AgentDiagram UUID) is the authoritative link, but the bake loop
+    keys services by `_safe_service_name(artifact.name)`, not by UUID — so unless a
+    {uuid → svc} index is threaded in (OQ-2) we address by `peer` name, matching how
+    `_a2a_descriptor` already resolves to_/from_ peers. `ref` is recorded on the edge
+    for traceability and future UUID-keyed addressing.
+    """
+    peer = _safe_service_name(edge.get("peer", ""))
+    return peer if peer in service_names else None
+
+
+def _a2a_descriptor_from_tags(agent, service_names: set, self_service: str = None) -> dict:
+    """Build an A2A descriptor from agent._a2a (WME tags) — the preferred path (D3).
+
+    Mirrors `_a2a_descriptor`'s contract (role/agent_id/to_peers/prompt/greeting) and
+    adds `peers` (ordered, with kind) and `inbound` for the per-kind template. Peers not
+    in `service_names` (dangling ref/name) are dropped — same tolerance as the legacy
+    `from_<Human>` handoff.
+    """
+    tags = getattr(agent, '_a2a', None) or {}
+    self_id = self_service or _safe_service_name(getattr(agent, 'name', 'Agent'))
+    name = getattr(agent, 'name', 'Agent')
+
+    peers, seen = [], set()                       # ordered, deduped, self-filtered
+    for edge in tags.get('outbound', []):         # already order-sorted by the parser
+        svc = _resolve_peer_service(edge, service_names)
+        if svc and svc != self_id and svc not in seen:
+            seen.add(svc)
+            peers.append({'service': svc, 'kind': edge.get('kind'),
+                          'order': edge.get('order', 9999),
+                          'state': edge.get('state', '')})
+
+    inbound_peers = {
+        _resolve_peer_service(e, service_names)
+        for e in tags.get('inbound', [])
+    } - {None, self_id}
+    role = 'worker' if inbound_peers else 'entry'
+
+    # Prompt: reuse the first LLMReply prompt on a non-boundary state, else a default
+    # (identical heuristic to _a2a_descriptor for parity).
+    prompt = None
+    for st in getattr(agent, 'states', []) or []:
+        body = getattr(st, 'body', None)
+        actions = getattr(body, 'actions', None) if body else None
+        if actions and actions[0].__class__.__name__ == 'LLMReply':
+            prompt = getattr(actions[0], 'prompt', None) or prompt
+    return {
+        'role': role,
+        'agent_id': _safe_service_name(name),
+        'to_peers': [p['service'] for p in peers],     # back-compat (existing template/tests)
+        'peers': peers,                                # NEW: per-kind, ordered
+        'inbound': sorted(inbound_peers),              # NEW
+        'source': 'tags',                              # provenance (vs 'convention')
         'prompt': prompt or _default_prompt(name, role),
         'greeting': f"Hi! I'm {name}. Give me a task for the team.",
     }
@@ -202,7 +269,13 @@ class DockerComposeGenerator(GeneratorInterface):
             # item 22 — pass THIS service's name so a `from_<self>` boundary can't
             # demote the entry to a worker (the agent_id and the service line up via
             # _safe_service_name, but pass it explicitly to be robust).
-            descriptor = _a2a_descriptor(agent, service_names, self_service=svc_name)
+            # item 10 — precedence: explicit WME a2a: tags (agent._a2a) ▸ the legacy
+            # to_/from_ state-name convention ▸ self-contained. Absent tags ⇒ exactly the
+            # current path (back-compat guarantee).
+            if getattr(agent, '_a2a', None):
+                descriptor = _a2a_descriptor_from_tags(agent, service_names, self_service=svc_name)
+            else:
+                descriptor = _a2a_descriptor(agent, service_names, self_service=svc_name)
             has_boundaries = bool(descriptor['to_peers']) or descriptor['role'] == 'worker'
             if has_boundaries:
                 with open(os.path.join(ctx_dir, f"{agent.name}.py"),
@@ -244,7 +317,12 @@ class DockerComposeGenerator(GeneratorInterface):
             if agent is None:
                 continue
             svc = _safe_service_name(art.name)
-            descriptor = _a2a_descriptor(agent, service_names, self_service=svc)
+            # item 10 — same tag ▸ convention precedence as the bake loop, so the
+            # entry/worker split (and the published ports) agree with what's baked.
+            if getattr(agent, '_a2a', None):
+                descriptor = _a2a_descriptor_from_tags(agent, service_names, self_service=svc)
+            else:
+                descriptor = _a2a_descriptor(agent, service_names, self_service=svc)
             if descriptor['role'] == 'entry':
                 result.add(svc)
         return result

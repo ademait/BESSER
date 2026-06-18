@@ -114,3 +114,25 @@ agent to *N* instances, so ``docker compose up --build`` launches a swarm of
 exactly the size authored on the BPMN lane.  LOCAL artifacts with no
 ``agentModelRef`` (hand-drawn or unlinked) keep ``build: ./<svc>`` with no
 Dockerfile baked — the user supplies their own build context.
+
+Tag-driven A2A wiring
+~~~~~~~~~~~~~~~~~~~~~~~
+
+When the Web Modeling Editor annotates the Agent diagram with explicit
+agent-to-agent (A2A) tags, the bake uses them in preference to the legacy
+``to_<peer>`` / ``from_<peer>`` state-name convention.  The tags ride fields the
+core converter otherwise drops — ``a2a:out`` lines on an ``AgentState``
+description (one per downstream peer) and ``a2a:in`` on a ``when_intent_matched``
+transition name — and are parsed by a standalone annotation pass that stashes the
+result on the agent (``agent._a2a``) without touching the converter.  Each
+out-edge carries a ``kind`` (``delegates``, ``supervises``, ``revises``,
+``collaborates``) that shapes how the requester frames the task for that peer and
+how the reply is folded back, and an ``order`` that sequences multi-peer sends.
+A peer with no ``kind`` is a plain channel — the task is passed through unframed,
+exactly as the convention-based fan-out behaves today.  The transport is
+unchanged in all cases (the BAF ``POST /a2a`` JSON-RPC platform); ``kind`` and
+``order`` affect only the generated message wording and call sequence.  Multi-round
+review loops are expressed on the BPMN/WME side as additional edges (one
+``a2a:out``/``a2a:in`` pair per round), so the generated code stays one
+request/response per edge.  When a diagram carries no ``a2a:`` tag the bake falls
+back to the convention and the output is byte-identical to before.

@@ -23,7 +23,7 @@ agent.set_default_ic_config(LLMIntentClassifierConfiguration(
 
 SYSTEM_PROMPT = {{ a2a.prompt | tojson }}
 
-{% if a2a.to_peers %}
+{% if a2a.peers %}
 # ── A2A client: fan out to every replica of each downstream peer (plan §5, Q4) ──
 def _peer_replica_urls(service, port=8000):
     # Docker embedded DNS returns one A-record per running replica (R1: plain-compose
@@ -49,11 +49,25 @@ def _a2a_call(base_url, agent_id, message):
         logging.warning("A2A call to %s failed: %s", base_url, exc)
         return f"(no response from {agent_id})"
 
+# ── per-kind framing (item 10, D4): how the requester frames the task for each peer
+# kind, and the label its reply folds under. Transport is unchanged (_a2a_call); kind
+# shapes only the message wording and the reply label. "plain" = no kind= (pass-through).
+_KIND_FRAME = {
+    "delegates":    ("Delegated subtask — complete it and return the result:\n{task}", "result"),
+    "supervises":   ("Review the following work. Return approval or concrete corrections:\n{task}", "review"),
+    "revises":      ("Revise the following so it is correct and complete; return the revised version:\n{task}", "revision"),
+    "collaborates": ("Collaborator input — react and contribute:\n{task}", "input"),
+    "plain":        ("{task}", "reply"),         # plain channel (no kind=) — pass through
+}
+
 def _fanout(task):
+    # Ordered, per-kind calls to each downstream peer (sequence set by WME `order`).
     parts = []
-{% for peer in a2a.to_peers %}
-    for url in _peer_replica_urls("{{ peer }}"):
-        parts.append(("{{ peer }}", _a2a_call(url, "{{ peer }}", task)))
+{% for peer in a2a.peers %}
+    _frame, _label = _KIND_FRAME[{{ (peer.kind or "plain") | tojson }}]
+    _msg = _frame.format(task=task)
+    for url in _peer_replica_urls("{{ peer.service }}"):
+        parts.append(("{{ peer.service }}", _label, _a2a_call(url, "{{ peer.service }}", _msg)))
 {% endfor %}
     return parts
 {% endif %}
@@ -65,9 +79,9 @@ a2a_platform = agent.use_a2a_platform()
 async def handle(**params):
     task = params.get("message", "")
     reply = reply_llm.predict(message=task, session=None, system_message=SYSTEM_PROMPT)
-{% if a2a.to_peers %}
+{% if a2a.peers %}
     parts = _fanout(reply)
-    peer_ctx = "\n\n".join(f"[{name}]\n{txt}" for name, txt in parts)
+    peer_ctx = "\n\n".join(f"[{name} · {label}]\n{txt}" for name, label, txt in parts)
     return {"reply": f"{reply}\n\nPeer feedback:\n{peer_ctx}" if peer_ctx else reply}
 {% else %}
     return {"reply": reply}
@@ -94,9 +108,9 @@ greetings.when_no_intent_matched().go_to(work)
 
 def work_body(session: Session):
     task = session.event.message
-{% if a2a.to_peers %}
+{% if a2a.peers %}
     parts = _fanout(task)
-    ctx = "\n\n".join(f"[{name}]\n{txt}" for name, txt in parts)
+    ctx = "\n\n".join(f"[{name} · {label}]\n{txt}" for name, label, txt in parts)
     final = reply_llm.predict(message=f"Task: {task}\n\nTeam results:\n{ctx}",
                               session=session, system_message=SYSTEM_PROMPT)
 {% else %}

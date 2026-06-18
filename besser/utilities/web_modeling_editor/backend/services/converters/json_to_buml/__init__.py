@@ -6,6 +6,7 @@ from .class_diagram_processor import process_class_diagram
 from .object_diagram_processor import process_object_diagram
 from .state_machine_processor import process_state_machine
 from .agent_diagram_processor import process_agent_diagram
+from .a2a_tags import annotate_agent_with_a2a
 # bpmn_diagram_processor must be imported before project_converter — the latter does
 # `from . import (..., process_bpmn_diagram)` to wire BPMN into project conversion, so
 # the name has to be present in this package's namespace when project_converter loads.
@@ -25,6 +26,7 @@ __all__ = [
     'process_object_diagram',
     'process_state_machine',
     'process_agent_diagram',
+    'annotate_agent_with_a2a',
     'json_to_buml_project',
     'process_gui_diagram',
     'process_quantum_diagram',
