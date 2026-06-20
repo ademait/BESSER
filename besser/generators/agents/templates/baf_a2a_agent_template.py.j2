@@ -29,6 +29,8 @@ SYSTEM_PROMPT = {{ a2a.prompt | tojson }}
 # time into a runtime instruction (guide 10 §2, Option B+). The LLM enforces it; if a human
 # participant is in the policy, defer the decision to the human via the UI instead.
 GOVERNANCE_INSTRUCTION = {{ a2a.governance.instruction | tojson }}
+# Human-readable policy facts (no LLM directive) — shown to the person at the approval step.
+GOVERNANCE_SUMMARY = {{ a2a.governance.summary | tojson }}
 # tojson would emit JS-style `true`/`false`; render a Python bool literal instead.
 GOVERNANCE_REQUIRES_HUMAN = {{ 'True' if a2a.governance.requires_human else 'False' }}
 {% endif %}
@@ -155,7 +157,7 @@ def work_body(session: Session):
         # auto-synthesise (guide 10 §2, point 5).
         session.set("gov_pending", {"task": task, "ctx": ctx})
         session.reply("A governance policy requires human approval before merging.\n\n"
-                      + GOVERNANCE_INSTRUCTION
+                      + GOVERNANCE_SUMMARY
                       + "\n\nCandidate replies:\n" + ctx
                       + "\n\nReply with your decision (choose one, combine, or edit).")
         return

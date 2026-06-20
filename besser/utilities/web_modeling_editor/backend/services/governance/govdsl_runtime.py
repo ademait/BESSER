@@ -84,34 +84,47 @@ def _summarize_policy(policy) -> dict:
     }
 
 
-def _build_instruction(summary: dict) -> str:
+def _build_instruction(summary: dict):
+    """Return (human_summary, llm_instruction).
+
+    `human_summary` is the policy facts shown to a person at the approval step.
+    `llm_instruction` adds the merge preamble and the auditable-vote directive on top
+    of those facts; it is the agent's system message only, NOT for human display.
+    """
     rule = _POLICY_RULES.get(summary["policy_type"],
                              "Apply the stated governance policy to merge the replies.")
     names = ", ".join(p["name"] for p in summary["participants"]) or "(unspecified)"
-    lines = [
-        "You are the merge point of an agent swarm. Apply this governance policy to "
-        "combine the collaborators' replies into one result.",
+    facts = [
         f"Policy type: {summary['policy_type']}.",
         f"Decision rule: {rule}",
         f"Participants (collaborators): {names}.",
     ]
     if summary["ratio"] is not None:
-        lines.append(f"Ratio threshold: {summary['ratio']}.")
+        facts.append(f"Ratio threshold: {summary['ratio']}.")
     if summary["decision_type"]:
-        lines.append(f"Decision type: {summary['decision_type']}.")
-    lines.append(
+        facts.append(f"Decision type: {summary['decision_type']}.")
+    human_summary = "\n".join(facts)
+    directive = (
         "First output a 'Votes:' section so the decision is auditable: list each "
         "collaborator using the reply label you were given (e.g. an agent name with "
         "its #replica index) and the position/option its reply supports; add your own "
         "position, and the human's choice if one was provided. Then state the tally "
         "against the policy (and the ratio threshold, if any) and the resulting "
         "outcome. Finally, give the merged final answer.")
-    return "\n".join(lines)
+    llm_instruction = "\n".join(
+        ["You are the merge point of an agent swarm. Apply this governance policy to "
+         "combine the collaborators' replies into one result."]
+        + facts + [directive])
+    return human_summary, llm_instruction
 
 
 def summarize_governance(dsl_text):
-    """Public entry. Returns a dict {instruction, requires_human, policy_type, raw}
-    or None for empty input. Never raises."""
+    """Public entry. Returns a dict {instruction, summary, requires_human, policy_type,
+    raw} or None for empty input. Never raises.
+
+    `instruction` is the agent's system message (full, with the audit directive);
+    `summary` is the human-readable policy facts shown at the approval step.
+    """
     if not dsl_text or not dsl_text.strip():
         return None
     cleaned = _strip_comments(dsl_text)
@@ -120,8 +133,10 @@ def summarize_governance(dsl_text):
         if not policies:
             raise ValueError("no policies parsed")
         summary = _summarize_policy(policies[0])  # one merge point per gateway (v1)
+        human_summary, instruction = _build_instruction(summary)
         return {
-            "instruction": _build_instruction(summary),
+            "instruction": instruction,
+            "summary": human_summary,
             "requires_human": summary["requires_human"],
             "policy_type": summary["policy_type"],
             "raw": dsl_text,
@@ -132,6 +147,9 @@ def summarize_governance(dsl_text):
             "instruction": ("You are the merge point of an agent swarm. Apply the following "
                             "governance policy (DSL) to combine the collaborators' replies "
                             "into one result, then give the final answer.\n\n" + dsl_text),
+            # Fallback never sets requires_human, so the human-approval step (the only
+            # consumer of `summary`) won't fire; provide the key for template safety.
+            "summary": "Governance policy (could not be parsed; shown verbatim):\n" + dsl_text,
             "requires_human": False,
             "policy_type": None,
             "raw": dsl_text,
