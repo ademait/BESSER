@@ -52,6 +52,9 @@ from besser.utilities.web_modeling_editor.backend.services.converters import (
 from besser.utilities.web_modeling_editor.backend.constants.user_buml_model import (
     domain_model as user_reference_domain_model,
 )
+from besser.utilities.web_modeling_editor.backend.services.governance.govdsl_runtime import (
+    summarize_governance,
+)
 
 # Backend services - Other services
 from besser.utilities.web_modeling_editor.backend.services.utils.agent_generation_utils import (
@@ -624,6 +627,49 @@ async def _handle_web_app_project_generation(input_data: ProjectInput, generator
         )
 
 
+def _attach_governance_to_agents(input_data, agent_models_by_id: dict) -> None:
+    """item 35 — map each agentic merging gateway's governanceDsl onto the BUML Agent
+    of its owning lane, as ``agent._governance`` (a list of summary dicts from
+    summarize_governance). Mapping: gateway.owner (lane id) → lane.agentDiagramRef →
+    agent_models_by_id key. No-op when there is no BPMN diagram, no gateway carries a
+    governanceDsl, or the owning lane is unlinked/dangling.
+    """
+    # The project payload keys BPMN diagrams under "BPMN" (the WME export/request
+    # short name); "BPMNDiagram" is the backend-internal discriminator used by the
+    # conversion paths. Accept either so governance resolves regardless of caller.
+    bpmn_entries = (input_data.diagrams.get("BPMNDiagram")
+                    or input_data.diagrams.get("BPMN")
+                    or [])
+    for entry in bpmn_entries:
+        entry_dict = entry.model_dump() if hasattr(entry, "model_dump") else entry
+        if not isinstance(entry_dict, dict):
+            continue
+        elements = (((entry_dict.get("model") or {}).get("elements")) or {})
+        items = list(elements.values() if isinstance(elements, dict) else elements)
+        # lane id → its agentDiagramRef, so a gateway's owner resolves to an agent.
+        lane_ref = {
+            el.get("id"): el.get("agentDiagramRef")
+            for el in items
+            if isinstance(el, dict) and el.get("type") == "BPMNSwimlane"
+        }
+        for el in items:
+            if not isinstance(el, dict) or el.get("type") != "BPMNGateway":
+                continue
+            gov = el.get("governanceDsl")
+            if not gov:
+                continue
+            ref = lane_ref.get(el.get("owner"))
+            agent = agent_models_by_id.get(ref) if ref else None
+            if agent is None:
+                continue
+            summary = summarize_governance(gov)
+            if summary is None:
+                continue
+            existing = getattr(agent, "_governance", None) or []
+            existing.append(summary)
+            agent._governance = existing
+
+
 @handle_endpoint_errors("_handle_deployment_project_generation")
 async def _handle_deployment_project_generation(
     input_data: ProjectInput, generator_info, config: dict, generator_type: str
@@ -667,6 +713,13 @@ async def _handle_deployment_project_generation(
                 # the diagram carries no a2a: tag (legacy agents stay byte-identical).
                 annotate_agent_with_a2a(agent_model, entry_dict)
                 agent_models_by_id[diagram_id] = agent_model
+
+        # item 35 — governance DSL → runtime. A merging gateway's governanceDsl is
+        # authored in the BPMN diagram and round-trips on AgenticGateway, but the
+        # compose path never loads the BPMN model (guide 10 §1.2). Read it from the
+        # raw BPMN JSON, parse it (guide 10 §3.0), and stash a runtime instruction on
+        # the agent whose lane owns the gateway, for injection into its synthesis.
+        _attach_governance_to_agents(input_data, agent_models_by_id)
 
         generator_class = generator_info.generator_class
         generator_instance = generator_class(

@@ -48,6 +48,13 @@ def _default_prompt(name: str, role: str) -> str:
             f"you are given concisely; if you received collaborator inputs, use them.")
 
 
+def _governance_for(agent):
+    """item 35 — the first governance summary stashed by the backend handler
+    (guide 10 §3a), or None. The generator forwards it verbatim; no parsing here."""
+    blobs = getattr(agent, '_governance', None) or []
+    return blobs[0] if blobs else None
+
+
 def _a2a_descriptor(agent, service_names: set, self_service: str = None) -> dict:
     """Classify a baked agent for A2A wiring from its boundary states (plan §3/§4).
 
@@ -98,6 +105,7 @@ def _a2a_descriptor(agent, service_names: set, self_service: str = None) -> dict
                   for i, p in enumerate(sorted_peers)],
         'source': 'convention',
         'prompt': prompt or _default_prompt(name, role),
+        'governance': _governance_for(agent),
         'greeting': f"Hi! I'm {name}. Give me a task for the team.",
     }
 
@@ -158,6 +166,7 @@ def _a2a_descriptor_from_tags(agent, service_names: set, self_service: str = Non
         'inbound': sorted(inbound_peers),              # NEW
         'source': 'tags',                              # provenance (vs 'convention')
         'prompt': prompt or _default_prompt(name, role),
+        'governance': _governance_for(agent),
         'greeting': f"Hi! I'm {name}. Give me a task for the team.",
     }
 
@@ -384,7 +393,17 @@ class DockerComposeGenerator(GeneratorInterface):
         for rel in all_rels:
             if isinstance(rel, DeploymentDependency):
                 if isinstance(rel.source, Artifact) and isinstance(rel.target, Artifact):
+                    # D12 synthetic artifacts (component projections, art.manifests != [])
+                    # are not rendered as services, so a dependency on one would point at a
+                    # non-existent service. They also reuse the physical artifact's service
+                    # name, which is how an Artifact→Component dependency degenerates into a
+                    # self-reference (e.g. agent_coder -> agent_coder, a compose cycle). Skip
+                    # manifest targets, and guard self-deps as a belt-and-suspenders.
+                    if rel.target.manifests:
+                        continue
                     svc_target = _safe_service_name(rel.target.name)
+                    if svc_target == _safe_service_name(rel.source.name):
+                        continue
                     deps = art_depends[id(rel.source)]
                     if svc_target not in deps:
                         deps.append(svc_target)

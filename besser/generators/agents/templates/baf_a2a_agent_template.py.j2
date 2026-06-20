@@ -24,6 +24,14 @@ agent.set_default_ic_config(LLMIntentClassifierConfiguration(
     use_entity_descriptions=False, use_entity_synonyms=False))
 
 SYSTEM_PROMPT = {{ a2a.prompt | tojson }}
+{% if a2a.governance %}
+# item 35 — governance policy authored on the BPMN merging gateway, parsed at generation
+# time into a runtime instruction (guide 10 §2, Option B+). The LLM enforces it; if a human
+# participant is in the policy, defer the decision to the human via the UI instead.
+GOVERNANCE_INSTRUCTION = {{ a2a.governance.instruction | tojson }}
+# tojson would emit JS-style `true`/`false`; render a Python bool literal instead.
+GOVERNANCE_REQUIRES_HUMAN = {{ 'True' if a2a.governance.requires_human else 'False' }}
+{% endif %}
 
 {% if a2a.peers %}
 # ── A2A client: fan out to every replica of each downstream peer (plan §5, Q4) ──
@@ -63,9 +71,14 @@ async def _fanout(task):
 {% for peer in a2a.peers %}
     _frame, _label = _KIND_FRAME[{{ (peer.kind or "plain") | tojson }}]
     _msg = _frame.format(task=task)
-    for url in _peer_replica_urls("{{ peer.service }}"):
+    _urls = _peer_replica_urls("{{ peer.service }}")
+    for _i, url in enumerate(_urls):
         coros.append(asyncio.to_thread(_a2a_call, url, "{{ peer.service }}", _msg))
-        meta.append(("{{ peer.service }}", _label))
+        # When a service runs >1 replica (BPMN lane multiplicity), suffix the instance
+        # index so the merge point — and any governance vote — can tell the copies
+        # apart (guide 10 G1). Single-replica services keep their plain name.
+        _sid = "{{ peer.service }}" + (f"#{_i + 1}" if len(_urls) > 1 else "")
+        meta.append((_sid, _label))
 {% endfor %}
     results = await asyncio.gather(*coros, return_exceptions=True)
     parts = []
@@ -118,8 +131,23 @@ def work_body(session: Session):
     _t.start(); _t.join(timeout=300)
     parts = _res
     ctx = "\n\n".join(f"[{name} · {label}]\n{txt}" for name, label, txt in parts)
+{% if a2a.governance %}
+    if GOVERNANCE_REQUIRES_HUMAN:
+        # Human-in-the-loop: present the candidate replies + the policy and let the
+        # human decide. Do NOT auto-synthesise (guide 10 §2, point 5).
+        session.reply("A governance policy requires human approval before merging.\n\n"
+                      + GOVERNANCE_INSTRUCTION
+                      + "\n\nCandidate replies:\n" + ctx
+                      + "\n\nReply with your decision (choose one, combine, or edit).")
+        return
+    # Governance-guided synthesis: the policy decides how the replies merge.
+    sys_msg = SYSTEM_PROMPT + "\n\n" + GOVERNANCE_INSTRUCTION
+    final = reply_llm.predict(message=f"Task: {task}\n\nCollaborators' replies:\n{ctx}",
+                              session=session, system_message=sys_msg)
+{% else %}
     final = reply_llm.predict(message=f"Task: {task}\n\nTeam results:\n{ctx}",
                               session=session, system_message=SYSTEM_PROMPT)
+{% endif %}
 {% else %}
     final = reply_llm.predict(message=task, session=session, system_message=SYSTEM_PROMPT)
 {% endif %}
