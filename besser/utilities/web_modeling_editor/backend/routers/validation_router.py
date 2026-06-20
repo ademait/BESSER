@@ -25,6 +25,7 @@ from besser.utilities.web_modeling_editor.backend.services.converters import (
     process_nn_diagram,
     process_component_diagram,
     process_deployment_diagram,
+    process_bpmn_diagram,
 )
 from besser.utilities.web_modeling_editor.backend.constants.user_buml_model import (
     domain_model as user_reference_domain_model,
@@ -200,6 +201,9 @@ async def validate_diagram(input_data: DiagramInput):
                     dm_validation = deployment_model.validate(raise_exception=False)
                     validation_errors.extend(dm_validation["errors"])
                     validation_warnings.extend(dm_validation["warnings"])
+
+        elif diagram_type == "BPMNDiagram":
+            process_bpmn_diagram(input_data.model_dump())
 
         else:
             return {

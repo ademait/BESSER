@@ -243,10 +243,10 @@ def _project_payload() -> dict:
         "createdAt": "2026-05-31T00:00:00Z",
         "currentDiagramType": "ComponentDiagram",
         "currentDiagramIndices": {
-            "BPMNDiagram": 0, "ComponentDiagram": 0, "DeploymentDiagram": 0,
+            "BPMN": 0, "ComponentDiagram": 0, "DeploymentDiagram": 0,
         },
         "diagrams": {
-            "BPMNDiagram": [_bpmn_diagram()],
+            "BPMN": [_bpmn_diagram()],
             "ComponentDiagram": [_component_diagram()],
             "DeploymentDiagram": [_deployment_diagram()],
         },
