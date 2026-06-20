@@ -127,14 +127,33 @@ greetings.when_no_intent_matched().go_to(work)
 def work_body(session: Session):
     task = session.event.message
 {% if a2a.peers %}
+{% if a2a.governance %}
+    # Human-in-the-loop phase 2: a decision is pending from the previous turn, so this
+    # message IS the human's decision. Apply it to the stashed candidates WITHOUT
+    # re-running the swarm (otherwise the decision is mistaken for a new task).
+    _pending = session.get("gov_pending")
+    if GOVERNANCE_REQUIRES_HUMAN and _pending:
+        session.delete("gov_pending")
+        sys_msg = SYSTEM_PROMPT + "\n\n" + GOVERNANCE_INSTRUCTION
+        final = reply_llm.predict(
+            message=("Original task: " + _pending["task"]
+                     + "\n\nCollaborators' replies:\n" + _pending["ctx"]
+                     + "\n\nThe human's decision: " + task
+                     + "\n\nProduce the final merged answer that honours the human's decision."),
+            session=session, system_message=sys_msg)
+        session.reply(final)
+        return
+{% endif %}
     _res = []; _t = threading.Thread(target=lambda: _res.extend(asyncio.run(_fanout(task))), daemon=True)
     _t.start(); _t.join(timeout=300)
     parts = _res
     ctx = "\n\n".join(f"[{name} · {label}]\n{txt}" for name, label, txt in parts)
 {% if a2a.governance %}
     if GOVERNANCE_REQUIRES_HUMAN:
-        # Human-in-the-loop: present the candidate replies + the policy and let the
-        # human decide. Do NOT auto-synthesise (guide 10 §2, point 5).
+        # Phase 1: present the candidate replies + the policy, stash them on the session,
+        # and wait for the human's decision (handled by phase 2 above next turn). Do NOT
+        # auto-synthesise (guide 10 §2, point 5).
+        session.set("gov_pending", {"task": task, "ctx": ctx})
         session.reply("A governance policy requires human approval before merging.\n\n"
                       + GOVERNANCE_INSTRUCTION
                       + "\n\nCandidate replies:\n" + ctx
