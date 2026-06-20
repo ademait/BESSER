@@ -99,8 +99,13 @@ def _build_instruction(summary: dict) -> str:
         lines.append(f"Ratio threshold: {summary['ratio']}.")
     if summary["decision_type"]:
         lines.append(f"Decision type: {summary['decision_type']}.")
-    lines.append("State which reply(ies) you selected and why in one sentence, then give "
-                 "the final answer.")
+    lines.append(
+        "First output a 'Votes:' section so the decision is auditable: list each "
+        "collaborator using the reply label you were given (e.g. an agent name with "
+        "its #replica index) and the position/option its reply supports; add your own "
+        "position, and the human's choice if one was provided. Then state the tally "
+        "against the policy (and the ratio threshold, if any) and the resulting "
+        "outcome. Finally, give the merged final answer.")
     return "\n".join(lines)
 
 
