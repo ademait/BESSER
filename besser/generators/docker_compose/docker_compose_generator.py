@@ -213,9 +213,9 @@ class DockerComposeGenerator(GeneratorInterface):
             f.write(template.render(services=services, networks=networks))
         print("Code generated in the location: " + file_path)
         # 6b-2 — bake a BAF build context per resolvable agentic LOCAL artifact.
-        self._bake_agent_contexts(env)
+        self._bake_agent_contexts(env, entry_services)
 
-    def _bake_agent_contexts(self, env: Environment) -> None:
+    def _bake_agent_contexts(self, env: Environment, entry_services: set = None) -> None:
         """For each LOCAL Artifact carrying a resolvable ``agent_model_ref``,
         bake a build context (``<output_dir>/<svc_name>/``) containing the BAF
         ``agent.py`` + ``config.yaml`` (via BAFGenerator) and a ``Dockerfile``.
@@ -285,6 +285,17 @@ class DockerComposeGenerator(GeneratorInterface):
                 descriptor = _a2a_descriptor_from_tags(agent, service_names, self_service=svc_name)
             else:
                 descriptor = _a2a_descriptor(agent, service_names, self_service=svc_name)
+            # An entry agent runs a websocket/UI platform, not an A2A server, so it has
+            # nothing listening for /a2a — any peer edge pointing at an entry is a call
+            # that always "Connection refused"s. Drop entry services from every agent's
+            # peers (e.g. a worker's merge-gateway back-edge to the supervision/entry
+            # lane); the worker's result already returns via the entry's own fan-out.
+            entries = entry_services or set()
+            if entries:
+                descriptor['peers'] = [p for p in descriptor.get('peers', [])
+                                       if p.get('service') not in entries]
+                descriptor['to_peers'] = [s for s in descriptor.get('to_peers', [])
+                                          if s not in entries]
             has_boundaries = bool(descriptor['to_peers']) or descriptor['role'] == 'worker'
             if has_boundaries:
                 with open(os.path.join(ctx_dir, f"{agent.name}.py"),
