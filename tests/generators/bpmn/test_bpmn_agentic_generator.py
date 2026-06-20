@@ -122,7 +122,7 @@ def _agentic_lane_model() -> BPMNModel:
     t = Task(name="Code")
     lane = AgenticLane(
         name="Reviewer",
-        role=AgentRole.MANAGER,
+        role=AgentRole.SUPERVISION,
         trust_score=85,
         flow_nodes={t},
     )
@@ -233,7 +233,7 @@ class TestAgenticLaneEmission:
         inner = _agentic_inner(root)
         assert len(inner) == 1
         attrs = inner[0].attrib
-        assert attrs.get("role") == "manager"
+        assert attrs.get("role") == "supervision"
         assert attrs.get("trustScore") == "85"
         # Task/gateway-only attrs absent.
         for forbidden in ("reflectionMode", "gatewayRole",
@@ -244,7 +244,7 @@ class TestAgenticLaneEmission:
 
     def test_agentic_lane_emits_multiplicity_when_gt_one(self, tmp_path):  # 3c
         t = Task(name="Code")
-        lane = AgenticLane(name="Reviewer", role=AgentRole.MANAGER,
+        lane = AgenticLane(name="Reviewer", role=AgentRole.SUPERVISION,
                            trust_score=85, multiplicity=3, flow_nodes={t})
         p = Process(name="P", flow_nodes={t}, lanes={lane})
         model = BPMNModel(name="AgLaneSwarm", processes={p})
@@ -326,8 +326,10 @@ class TestEnumValueStrings:
         assert _agentic_inner(root)[0].attrib["reflectionMode"] == expected
 
     @pytest.mark.parametrize("role,expected", [
-        (AgentRole.WORKER, "worker"),
-        (AgentRole.MANAGER, "manager"),
+        (AgentRole.SOLUTION, "solution"),
+        (AgentRole.SUPERVISION, "supervision"),
+        (AgentRole.COLLABORATION, "collaboration"),
+        (AgentRole.CONSENSUS, "consensus"),
     ])
     def test_role_strings(self, role, expected, tmp_path):  # G-11c
         t = Task(name="x")

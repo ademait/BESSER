@@ -49,10 +49,12 @@ def test_gateway_role_values():
 
 
 def test_agent_role_values():
-    """AgentRole .value strings match WME's BPMNAgentRole."""
-    assert AgentRole.WORKER.value == "worker"
-    assert AgentRole.MANAGER.value == "manager"
-    assert len(AgentRole) == 2
+    """AgentRole .value strings match WME's BPMNAgentRole (post-2afac286)."""
+    assert AgentRole.SOLUTION.value == "solution"
+    assert AgentRole.SUPERVISION.value == "supervision"
+    assert AgentRole.COLLABORATION.value == "collaboration"
+    assert AgentRole.CONSENSUS.value == "consensus"
+    assert len(AgentRole) == 4
 
 
 # ---------------------------------------------------------------------------
@@ -203,9 +205,9 @@ def test_agentic_gateway_no_merging_strategy():
 # ---------------------------------------------------------------------------
 
 def test_agentic_lane_defaults():
-    """Defaults: role=WORKER, trust_score=0."""
+    """Defaults: role=SOLUTION, trust_score=0."""
     lane = AgenticLane(name="Reviewer")
-    assert lane.role == AgentRole.WORKER
+    assert lane.role == AgentRole.SOLUTION
     assert lane.trust_score == 0
 
 
@@ -225,7 +227,7 @@ def test_agentic_lane_role_setter(role):
 
 def test_agentic_lane_role_type_error():
     with pytest.raises(TypeError, match="role must be an AgentRole"):
-        AgenticLane(name="lane", role="worker")
+        AgenticLane(name="lane", role="solution")
 
 
 def test_agentic_lane_trust_score_in_range():
@@ -278,7 +280,7 @@ def test_agentic_lane_agent_diagram_ref_type_error(value):
 
 def test_agentic_lane_repr_includes_ref():
     """__repr__ includes agent_diagram_ref (S1-mm-5)."""
-    lane = AgenticLane(name="Reviewer", role=AgentRole.MANAGER, trust_score=90,
+    lane = AgenticLane(name="Reviewer", role=AgentRole.SUPERVISION, trust_score=90,
                        agent_diagram_ref="ref-123")
     r = repr(lane)
     assert "agent_diagram_ref='ref-123'" in r
@@ -442,9 +444,9 @@ def test_agentic_gateway_repr():
 
 
 def test_agentic_lane_repr():
-    lane = AgenticLane(name="Reviewer", role=AgentRole.MANAGER, trust_score=85)
+    lane = AgenticLane(name="Reviewer", role=AgentRole.SUPERVISION, trust_score=85)
     r = repr(lane)
     assert "AgenticLane" in r
     assert "name='Reviewer'" in r
-    assert "AgentRole.MANAGER" in r
+    assert "AgentRole.SUPERVISION" in r
     assert "trust_score=85" in r

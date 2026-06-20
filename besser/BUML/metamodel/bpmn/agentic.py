@@ -51,13 +51,17 @@ class GatewayRole(Enum):
 
 
 class AgentRole(Enum):
-    """SEAA'25 «AgenticLane» profile role (paper §4.1).
+    """«AgenticLane» profile role, aligned with WME's BPMNAgentRole.
 
-    The paper notes the enum is extensible (e.g. ``"coder"``); kept minimal
-    here for the foundation. Add new members as the paper / WME grow them.
+    Four canonical values introduced in WME commit 2afac286.  Legacy files
+    written with the old vocabulary are accepted on parse
+    (worker→solution, manager→supervision) but this enum only carries the
+    new names.
     """
-    WORKER = "worker"
-    MANAGER = "manager"
+    SOLUTION = "solution"
+    SUPERVISION = "supervision"
+    COLLABORATION = "collaboration"
+    CONSENSUS = "consensus"
 
 
 # AgenticGateway is restricted to PARALLEL and INCLUSIVE gateway types per
@@ -387,14 +391,14 @@ class AgenticLane(Lane):
                  layout: dict = None, metadata=None, timestamp=None):
         super().__init__(name=name, flow_nodes=flow_nodes, layout=layout,
                          metadata=metadata, timestamp=timestamp)
-        self.role = role if role is not None else AgentRole.WORKER
+        self.role = role if role is not None else AgentRole.SOLUTION
         self.trust_score = trust_score
         self.agent_diagram_ref = agent_diagram_ref
         self.multiplicity = multiplicity
 
     @property
     def role(self) -> "AgentRole":
-        """AgentRole: Get the profile role (worker / manager)."""
+        """AgentRole: Get the profile role."""
         return self.__role
 
     @role.setter

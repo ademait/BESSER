@@ -258,7 +258,10 @@ def _build_node(elem: dict):
     if elem_type == "BPMNSwimlane":
         if elem.get("isAgentic"):
             # SEAA'25 «AgenticLane» (paper §4.1 Fig 3a).
-            role_value = elem.get("role", "worker") or "worker"
+            role_value = elem.get("role", "solution") or "solution"
+            # Accept legacy WME values (pre-2afac286) transparently.
+            _ROLE_ALIASES = {"worker": "solution", "manager": "supervision"}
+            role_value = _ROLE_ALIASES.get(role_value, role_value)
             try:
                 role = AgentRole(role_value)
             except ValueError as exc:

@@ -141,7 +141,7 @@ _WME_GATEWAY_DEFAULTS = {
 }
 _WME_LANE_DEFAULTS = {
     "isAgentic": False,
-    "role": "worker",
+    "role": "solution",
     "trustScore": 0,
     "multiplicity": 1,
 }

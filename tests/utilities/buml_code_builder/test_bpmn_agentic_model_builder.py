@@ -110,7 +110,7 @@ def _agentic_lane_model() -> BPMNModel:
     t = Task(name="Code")
     lane = AgenticLane(
         name="Reviewer",
-        role=AgentRole.MANAGER,
+        role=AgentRole.SUPERVISION,
         trust_score=75,
         flow_nodes={t},
     )
@@ -264,7 +264,7 @@ class TestAgenticLane:
         lane = next(iter(process.lanes))
         assert isinstance(lane, AgenticLane)
         assert lane.name == "Reviewer"
-        assert lane.role == AgentRole.MANAGER
+        assert lane.role == AgentRole.SUPERVISION
         assert lane.trust_score == 75
         # The lane still references the original flow_node.
         assert len(lane.flow_nodes) == 1
@@ -278,7 +278,7 @@ class TestAgenticLane:
     def test_emit_agentic_lane_with_ref(self):  # S1-b-1
         """An AgenticLane with agent_diagram_ref round-trips through exec'd code."""
         t = Task(name="Code")
-        lane = AgenticLane(name="Reviewer", role=AgentRole.MANAGER,
+        lane = AgenticLane(name="Reviewer", role=AgentRole.SUPERVISION,
                            trust_score=75, agent_diagram_ref="ref-123",
                            flow_nodes={t})
         p = Process(name="P", flow_nodes={t}, lanes={lane})
@@ -298,7 +298,7 @@ class TestAgenticLane:
     def test_emit_agentic_lane_with_multiplicity(self):  # 3c
         """An AgenticLane with multiplicity > 1 round-trips through exec'd code."""
         t = Task(name="Code")
-        lane = AgenticLane(name="Reviewer", role=AgentRole.MANAGER,
+        lane = AgenticLane(name="Reviewer", role=AgentRole.SUPERVISION,
                            trust_score=75, multiplicity=3, flow_nodes={t})
         p = Process(name="P", flow_nodes={t}, lanes={lane})
         model = BPMNModel(name="SwarmModel", processes={p})

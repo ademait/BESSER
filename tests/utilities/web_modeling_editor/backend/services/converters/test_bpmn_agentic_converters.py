@@ -266,14 +266,14 @@ def test_I11_import_agentic_lane():
         "p1": _node("p1", "BPMNPool", "Pool"),
         "l1": _node(
             "l1", "BPMNSwimlane", "Reviewer", owner="p1",
-            isAgentic=True, role="manager", trustScore=85,
+            isAgentic=True, role="supervision", trustScore=85,
         ),
     }
     model = process_bpmn_diagram(_envelope(elements, {}))
     [participant] = model.collaboration.participants
     [lane] = participant.process.lanes
     assert isinstance(lane, AgenticLane)
-    assert lane.role == AgentRole.MANAGER
+    assert lane.role == AgentRole.SUPERVISION
     assert lane.trust_score == 85
 
 
@@ -503,12 +503,12 @@ def _wrap_lane(lane):
 
 def test_E6_export_agentic_lane():
     """E-6: AgenticLane exports with isAgentic=true and SEAA fields."""
-    out = _wrap_lane(AgenticLane(name="Reviewer", role=AgentRole.MANAGER,
+    out = _wrap_lane(AgenticLane(name="Reviewer", role=AgentRole.SUPERVISION,
                                  trust_score=90))
     lane_entry = next(e for e in out["elements"].values()
                       if e["type"] == "BPMNSwimlane")
     assert lane_entry["isAgentic"] is True
-    assert lane_entry["role"] == "manager"
+    assert lane_entry["role"] == "supervision"
     assert lane_entry["trustScore"] == 90
 
 
@@ -518,7 +518,7 @@ def test_E7_export_non_agentic_lane():
     lane_entry = next(e for e in out["elements"].values()
                       if e["type"] == "BPMNSwimlane")
     assert lane_entry["isAgentic"] is False
-    assert lane_entry["role"] == "worker"
+    assert lane_entry["role"] == "solution"
     assert lane_entry["trustScore"] == 0
 
 
@@ -605,12 +605,12 @@ def test_R3_roundtrip_agentic_gateway_diverging():
 
 
 def test_R4_roundtrip_agentic_lane():
-    """R-4: Agentic lane round-trips lossless."""
+    """R-4: Agentic lane round-trips lossless (canonical value)."""
     elements = {
         "p1": _node("p1", "BPMNPool", "Pool"),
         "l1": _node(
             "l1", "BPMNSwimlane", "Reviewer", owner="p1",
-            isAgentic=True, role="manager", trustScore=95,
+            isAgentic=True, role="supervision", trustScore=95,
         ),
     }
     model = process_bpmn_diagram(_envelope(elements, {}))
@@ -618,7 +618,7 @@ def test_R4_roundtrip_agentic_lane():
     [lane_entry] = (e for e in out["elements"].values()
                     if e["type"] == "BPMNSwimlane")
     assert lane_entry["isAgentic"] is True
-    assert lane_entry["role"] == "manager"
+    assert lane_entry["role"] == "supervision"
     assert lane_entry["trustScore"] == 95
 
 
@@ -660,7 +660,7 @@ def _lane_elements(extra):
     return {
         "p1": _node("p1", "BPMNPool", "Pool"),
         "l1": _node("l1", "BPMNSwimlane", "AgentReviewer", owner="p1",
-                    isAgentic=True, role="manager", trustScore=90, **extra),
+                    isAgentic=True, role="supervision", trustScore=90, **extra),
     }
 
 
@@ -691,7 +691,7 @@ def test_S1_c3_import_agentic_lane_absent_ref_is_none():
 
 def test_S1_c4_export_agentic_lane_with_ref_emits_field():
     """S1-c-4: an AgenticLane with a ref emits agentDiagramRef in the JSON entry."""
-    out = _wrap_lane(AgenticLane(name="AgentReviewer", role=AgentRole.MANAGER,
+    out = _wrap_lane(AgenticLane(name="AgentReviewer", role=AgentRole.SUPERVISION,
                                  trust_score=90, agent_diagram_ref=_REF))
     lane_entry = next(e for e in out["elements"].values()
                       if e["type"] == "BPMNSwimlane")
@@ -700,7 +700,7 @@ def test_S1_c4_export_agentic_lane_with_ref_emits_field():
 
 def test_S1_c5_export_agentic_lane_without_ref_omits_field():
     """S1-c-5: an AgenticLane with no ref omits agentDiagramRef entirely (WME-08 behaviour)."""
-    out = _wrap_lane(AgenticLane(name="AgentReviewer", role=AgentRole.MANAGER,
+    out = _wrap_lane(AgenticLane(name="AgentReviewer", role=AgentRole.SUPERVISION,
                                  trust_score=90))
     lane_entry = next(e for e in out["elements"].values()
                       if e["type"] == "BPMNSwimlane")
@@ -768,6 +768,72 @@ def test_3c_export_non_agentic_lane_carries_default_multiplicity():
     lane_entry = next(e for e in out["elements"].values()
                       if e["type"] == "BPMNSwimlane")
     assert lane_entry["multiplicity"] == 1
+
+
+# ===========================================================================
+# AgentRole — vocabulary expansion (WME commit 2afac286)
+# Four canonical values: solution / supervision / collaboration / consensus.
+# Legacy aliases: worker→solution, manager→supervision (accepted on import).
+# ===========================================================================
+
+@pytest.mark.parametrize("role_str,expected", [
+    ("solution", AgentRole.SOLUTION),
+    ("supervision", AgentRole.SUPERVISION),
+    ("collaboration", AgentRole.COLLABORATION),
+    ("consensus", AgentRole.CONSENSUS),
+])
+def test_role_canonical_values_import(role_str, expected):
+    """All four canonical role strings import to the correct AgentRole member."""
+    elements = {
+        "p1": _node("p1", "BPMNPool", "Pool"),
+        "l1": _node("l1", "BPMNSwimlane", "L", owner="p1",
+                    isAgentic=True, role=role_str, trustScore=0),
+    }
+    model = process_bpmn_diagram(_envelope(elements, {}))
+    [lane] = next(iter(model.collaboration.participants)).process.lanes
+    assert lane.role == expected
+
+
+@pytest.mark.parametrize("role_str,expected", [
+    ("solution", AgentRole.SOLUTION),
+    ("supervision", AgentRole.SUPERVISION),
+    ("collaboration", AgentRole.COLLABORATION),
+    ("consensus", AgentRole.CONSENSUS),
+])
+def test_role_canonical_values_export(role_str, expected):
+    """All four canonical AgentRole members export to the correct string."""
+    out = _wrap_lane(AgenticLane(name="L", role=expected, trust_score=0))
+    lane_entry = next(e for e in out["elements"].values()
+                      if e["type"] == "BPMNSwimlane")
+    assert lane_entry["role"] == role_str
+
+
+@pytest.mark.parametrize("legacy,canonical", [
+    ("worker", "solution"),
+    ("manager", "supervision"),
+])
+def test_role_legacy_alias_import(legacy, canonical):
+    """Legacy role strings (worker/manager) are silently promoted to canonical values."""
+    elements = {
+        "p1": _node("p1", "BPMNPool", "Pool"),
+        "l1": _node("l1", "BPMNSwimlane", "L", owner="p1",
+                    isAgentic=True, role=legacy, trustScore=0),
+    }
+    model = process_bpmn_diagram(_envelope(elements, {}))
+    [lane] = next(iter(model.collaboration.participants)).process.lanes
+    assert lane.role.value == canonical
+
+
+def test_role_invalid_raises_conversion_error():
+    """An unrecognised role string raises ConversionError on import."""
+    from besser.utilities.web_modeling_editor.backend.services.exceptions import ConversionError
+    elements = {
+        "p1": _node("p1", "BPMNPool", "Pool"),
+        "l1": _node("l1", "BPMNSwimlane", "L", owner="p1",
+                    isAgentic=True, role="coder", trustScore=0),
+    }
+    with pytest.raises(ConversionError, match="Unknown role 'coder'"):
+        process_bpmn_diagram(_envelope(elements, {}))
 
 
 # ===========================================================================
