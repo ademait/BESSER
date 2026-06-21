@@ -119,3 +119,124 @@ def test_tags_ordered_and_deduped():
 def test_resolve_peer_service_by_name():
     assert _resolve_peer_service({"peer": "AgentCoder"}, {"agent_coder"}) == "agent_coder"
     assert _resolve_peer_service({"peer": "Ghost"}, {"agent_coder"}) is None
+
+
+# ---------------------------------------------------------------------------
+# item 37 — governed voting owner fans out to the PRODUCER ∪ VOTER star, with
+# producers (BPMN flows into the gateway) and voters (policy participants) decoupled.
+# ---------------------------------------------------------------------------
+
+def _voting_gov(participants, producers=None, policy_type="VotingPolicy"):
+    return {"policy_type": policy_type, "ratio": 0.5, "requires_human": False,
+            "participants": participants, "producers": producers or [],
+            "instruction": "...", "summary": "...", "raw": "..."}
+
+
+def _p(name, confidence=None, kind="agent"):
+    return {"name": name, "kind": kind, "confidence": confidence, "roles": []}
+
+
+def test_producers_and_voters_are_decoupled():
+    # Coder produces but does NOT vote; Reviewer votes but does NOT produce; the owner
+    # (Supervisor) votes (it is a participant) but does not produce. The star is the
+    # union of producers and non-owner voters: {coder} ∪ {reviewer}.
+    sup = _A('Supervisor', ['coordinate_work', 'to_coder'])
+    sup._governance = [_voting_gov(
+        participants=[_p("Supervisor", 0.9), _p("Reviewer", 0.6)],
+        producers=["Coder"])]
+    d = _a2a_descriptor(sup, {"supervisor", "coder", "reviewer"}, self_service="supervisor")
+    gov = d["governance"]
+    assert sorted(d["to_peers"]) == ["coder", "reviewer"]      # union, not just topology
+    assert gov["producer_services"] == ["coder"]              # round-1 targets
+    assert gov["weights"] == {"supervisor": 0.9, "reviewer": 0.6}  # voters only
+    assert "coder" not in gov["weights"]                       # a producer is not a voter
+    assert gov["owner_produces"] is False                      # Supervisor not a producer
+    assert gov["owner_votes"] is True                          # Supervisor is a participant
+    assert gov["is_voting"] is True
+    assert gov["engine_src"]                                   # baked source present
+    assert gov["self_service"] == "supervisor"
+
+
+def test_owner_produces_when_it_is_a_producer():
+    # Owner sits on an incoming branch → it is a producer; it self-produces in-process
+    # (no peer) and still votes because it is also a participant.
+    sup = _A('Supervisor', [])
+    sup._governance = [_voting_gov(
+        participants=[_p("Supervisor", 0.9), _p("Coder", 0.8)],
+        producers=["Supervisor", "Coder"])]
+    d = _a2a_descriptor(sup, {"supervisor", "coder"}, self_service="supervisor")
+    gov = d["governance"]
+    assert gov["owner_produces"] is True
+    assert gov["owner_votes"] is True
+    assert gov["producer_services"] == ["coder"]              # owner produces in-proc, not a peer
+    assert sorted(d["to_peers"]) == ["coder"]
+
+
+def test_owner_does_not_vote_when_absent_from_participants():
+    # Owner is the judge but is NOT listed in the policy → it must not cast a ballot.
+    sup = _A('Supervisor', [])
+    sup._governance = [_voting_gov(
+        participants=[_p("Coder", 0.8), _p("Reviewer", 0.6)],
+        producers=["Coder", "Reviewer"])]
+    d = _a2a_descriptor(sup, {"supervisor", "coder", "reviewer"}, self_service="supervisor")
+    gov = d["governance"]
+    assert gov["owner_votes"] is False
+    assert "supervisor" not in gov["weights"]
+    assert sorted(d["to_peers"]) == ["coder", "reviewer"]
+
+
+def test_unresolved_producer_and_voter_are_recorded():
+    # An unresolved producer AND an unresolved voter both surface as visible abstains;
+    # Coder resolves so the star still runs.
+    sup = _A('Supervisor', [])
+    sup._governance = [_voting_gov(
+        participants=[_p("Coder", 0.8), _p("GhostVoter", 0.5)],
+        producers=["Coder", "GhostProducer"])]
+    d = _a2a_descriptor(sup, {"supervisor", "coder"}, self_service="supervisor")
+    gov = d["governance"]
+    assert gov["unresolved"] == ["GhostProducer", "GhostVoter"]
+    assert gov["producer_services"] == ["coder"]
+    assert [p["service"] for p in d["peers"]] == ["coder"]
+
+
+def test_no_candidates_degrades_to_topology():
+    # Voting policy but no producer resolves and the owner is not a producer →
+    # _governance_star returns None → the item-35 single-round topology is kept.
+    sup = _A('Supervisor', ['coordinate_work', 'to_coder'])
+    sup._governance = [_voting_gov(
+        participants=[_p("Coder", 0.8)], producers=["Ghost"])]
+    d = _a2a_descriptor(sup, {"supervisor", "coder"}, self_service="supervisor")
+    assert d["to_peers"] == ["coder"]                          # topology, not a star
+    assert "is_voting" not in d["governance"]                  # raw summary, unaugmented
+
+
+def test_non_voting_policy_keeps_topology_peers():
+    # LeaderDrivenPolicy → _governance_star returns None → topology unchanged.
+    sup = _A('Supervisor', ['coordinate_work', 'to_coder'])
+    sup._governance = [_voting_gov([_p("Coder", 0.8)], producers=["Coder"],
+                                   policy_type="LeaderDrivenPolicy")]
+    d = _a2a_descriptor(sup, {"supervisor", "coder", "reviewer"}, self_service="supervisor")
+    assert d["to_peers"] == ["coder"]                          # topology, not the star
+    assert "weights" not in d["governance"]                    # raw summary, unaugmented
+    assert "is_voting" not in d["governance"]
+
+
+def test_no_governance_descriptor_unchanged():
+    sup = _A('Supervisor', ['coordinate_work', 'to_coder'])
+    d = _a2a_descriptor(sup, {"supervisor", "coder"}, self_service="supervisor")
+    assert d["to_peers"] == ["coder"]
+    assert d["governance"] is None
+
+
+def test_governed_voting_star_via_tags_path():
+    # the preferred (tags) builder must apply the same star override.
+    sup = _tagged('Supervisor', outbound=[
+        {"peer": "Coder", "ref": "u", "order": 1, "kind": "delegates", "state": "s"},
+    ])
+    sup._governance = [_voting_gov([_p("Coder", 0.8), _p("Reviewer", 0.6)],
+                                   producers=["Coder"])]
+    d = _a2a_descriptor_from_tags(sup, {"supervisor", "coder", "reviewer"},
+                                  self_service="supervisor")
+    assert sorted(d["to_peers"]) == ["coder", "reviewer"]
+    assert d["governance"]["is_voting"] is True
+    assert d["governance"]["weights"]["reviewer"] == 0.6

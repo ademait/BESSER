@@ -627,12 +627,44 @@ async def _handle_web_app_project_generation(input_data: ProjectInput, generator
         )
 
 
+def _producer_agent_names(gateway_id, relationships, items_by_id, lane_ref,
+                          agent_models_by_id) -> list:
+    """item 37 — the candidate PRODUCERS of a merging gateway are the agents on the
+    branches that FLOW INTO it: every sequence flow whose target is the gateway, traced
+    source node → owning lane → agentDiagramRef → Agent. This is what makes the vote
+    BPMN-faithful — only the tasks feeding the merge author a candidate, regardless of
+    who the policy lists as voters (full decoupling: producers ≠ voters).
+    """
+    names, seen = [], set()
+    for rel in relationships:
+        if not isinstance(rel, dict):
+            continue
+        if (rel.get("target") or {}).get("element") != gateway_id:
+            continue
+        # Only control-flow branches produce candidates; message/association/data flows
+        # into a gateway (if any) do not. Treat a missing flowType as a sequence flow.
+        ft = rel.get("flowType")
+        if ft and ft != "sequence":
+            continue
+        src = items_by_id.get((rel.get("source") or {}).get("element")) or {}
+        ref = lane_ref.get(src.get("owner"))
+        agent = agent_models_by_id.get(ref) if ref else None
+        if agent is not None and agent.name not in seen:
+            seen.add(agent.name)
+            names.append(agent.name)
+    return names
+
+
 def _attach_governance_to_agents(input_data, agent_models_by_id: dict) -> None:
     """item 35 — map each agentic merging gateway's governanceDsl onto the BUML Agent
     of its owning lane, as ``agent._governance`` (a list of summary dicts from
     summarize_governance). Mapping: gateway.owner (lane id) → lane.agentDiagramRef →
     agent_models_by_id key. No-op when there is no BPMN diagram, no gateway carries a
     governanceDsl, or the owning lane is unlinked/dangling.
+
+    item 37 — also stamps each summary with ``producers`` (the BPMN-derived candidate
+    producers; see ``_producer_agent_names``) so the generator can run the star vote
+    with producers and voters as decoupled sets.
     """
     # The project payload keys BPMN diagrams under "BPMN" (the WME export/request
     # short name); "BPMNDiagram" is the backend-internal discriminator used by the
@@ -644,8 +676,12 @@ def _attach_governance_to_agents(input_data, agent_models_by_id: dict) -> None:
         entry_dict = entry.model_dump() if hasattr(entry, "model_dump") else entry
         if not isinstance(entry_dict, dict):
             continue
-        elements = (((entry_dict.get("model") or {}).get("elements")) or {})
+        model = entry_dict.get("model") or {}
+        elements = model.get("elements") or {}
         items = list(elements.values() if isinstance(elements, dict) else elements)
+        relationships = model.get("relationships") or {}
+        rels = list(relationships.values() if isinstance(relationships, dict) else relationships)
+        items_by_id = {el.get("id"): el for el in items if isinstance(el, dict)}
         # lane id → its agentDiagramRef, so a gateway's owner resolves to an agent.
         lane_ref = {
             el.get("id"): el.get("agentDiagramRef")
@@ -665,6 +701,8 @@ def _attach_governance_to_agents(input_data, agent_models_by_id: dict) -> None:
             summary = summarize_governance(gov)
             if summary is None:
                 continue
+            summary["producers"] = _producer_agent_names(
+                el.get("id"), rels, items_by_id, lane_ref, agent_models_by_id)
             existing = getattr(agent, "_governance", None) or []
             existing.append(summary)
             agent._governance = existing

@@ -10,6 +10,11 @@ import logging
 
 logger = logging.getLogger(__name__)
 
+# Voting policy types resolved by the deterministic in-container tally (item 37). Mirrors
+# docker_compose_generator._VOTING_POLICIES. Non-voting policies (leader/consensus/lazy)
+# have NO vote, so their merge instruction must not ask the LLM to narrate one.
+_VOTING_POLICY_TYPES = frozenset(("VotingPolicy", "MajorityPolicy", "AbsoluteMajorityPolicy"))
+
 # Per-policy-type decision rule, in plain language for the LLM (the "concepts").
 _POLICY_RULES = {
     "VotingPolicy": ("Treat each collaborator's reply as a weighted vote; select the "
@@ -104,13 +109,30 @@ def _build_instruction(summary: dict):
     if summary["decision_type"]:
         facts.append(f"Decision type: {summary['decision_type']}.")
     human_summary = "\n".join(facts)
-    directive = (
-        "First output a 'Votes:' section so the decision is auditable: list each "
-        "collaborator using the reply label you were given (e.g. an agent name with "
-        "its #replica index) and the position/option its reply supports; add your own "
-        "position, and the human's choice if one was provided. Then state the tally "
-        "against the policy (and the ratio threshold, if any) and the resulting "
-        "outcome. Finally, give the merged final answer.")
+    if summary["policy_type"] in _VOTING_POLICY_TYPES:
+        # Voting policies are normally resolved by the deterministic in-container tally
+        # (item 37); this directive only steers the LLM on the degraded fallback path
+        # (no producer resolved to a service), where an auditable vote narrative is the
+        # best available audit trail.
+        directive = (
+            "First output a 'Votes:' section so the decision is auditable: list each "
+            "collaborator using the reply label you were given (e.g. an agent name with "
+            "its #replica index) and the position/option its reply supports; add your own "
+            "position, and the human's choice if one was provided. Then state the tally "
+            "against the policy (and the ratio threshold, if any) and the resulting "
+            "outcome. Finally, give the merged final answer.")
+    else:
+        # Non-voting policies (leader-driven / consensus / lazy-consensus) are NOT decided
+        # by a vote. Asking for a 'Votes:'/tally section makes the LLM fabricate one (e.g. a
+        # LeaderDriven merge inventing "3 Approve, 0 Disapprove"). Forbid the tally AND the
+        # softer "the collaborators approved/agreed" narrative it falls back to — neither
+        # event happened; the collaborators only returned candidate replies. Just merge.
+        directive = (
+            "Apply the decision rule above to the collaborators' replies and produce a "
+            "single merged final answer. Output ONLY that answer. Do NOT invent a vote, "
+            "tally, approval count, or outcome line, and do NOT claim that the collaborators "
+            "approved, agreed on, endorsed, confirmed, or reviewed the answer — no such step "
+            "happened. This policy is not decided by voting.")
     llm_instruction = "\n".join(
         ["You are the merge point of an agent swarm. Apply this governance policy to "
          "combine the collaborators' replies into one result."]
@@ -139,6 +161,10 @@ def summarize_governance(dsl_text):
             "summary": human_summary,
             "requires_human": summary["requires_human"],
             "policy_type": summary["policy_type"],
+            # item 37 — the star fan-out + tally need the participant list (names +
+            # confidence weights) and the ratio. They were parsed but not surfaced.
+            "participants": summary["participants"],
+            "ratio": summary["ratio"],
             "raw": dsl_text,
         }
     except Exception as exc:  # bad user edit / parser unavailable -> Option B fallback
@@ -152,5 +178,9 @@ def summarize_governance(dsl_text):
             "summary": "Governance policy (could not be parsed; shown verbatim):\n" + dsl_text,
             "requires_human": False,
             "policy_type": None,
+            # item 37 — no structured participants on the fallback path; a star vote
+            # is impossible without them, so the generator keeps the topology peers.
+            "participants": [],
+            "ratio": None,
             "raw": dsl_text,
         }

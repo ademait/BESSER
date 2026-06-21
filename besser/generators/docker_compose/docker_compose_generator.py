@@ -15,6 +15,8 @@ from besser.BUML.metamodel.uml_deployment import (
 )
 from besser.generators import GeneratorInterface
 from besser.generators.agents.baf_generator import BAFGenerator
+# item 37 — the tested tally engine; its SOURCE is baked into governed agents (guide 12 §2).
+from besser.generators.agents import governance_engine as _gov_engine
 from besser.utilities import sort_by_timestamp
 
 
@@ -53,6 +55,96 @@ def _governance_for(agent):
     (guide 10 §3a), or None. The generator forwards it verbatim; no parsing here."""
     blobs = getattr(agent, '_governance', None) or []
     return blobs[0] if blobs else None
+
+
+# item 37 — bake the WHOLE engine module (not per-function getsource) so the baked copy
+# keeps its `import re` + the `_BALLOT_RE` module global that `parse_ballot` depends on.
+# The count then runs in-container with no besser/ANTLR import (single source of truth).
+_GOV_ENGINE_SRC = inspect.getsource(_gov_engine)
+_VOTING_POLICIES = frozenset(("VotingPolicy", "MajorityPolicy", "AbsoluteMajorityPolicy"))
+
+
+def _governance_star(agent, service_names: set, self_id: str):
+    """item 37 — for a governed *voting* merge owner, compute the candidate-vote STAR.
+
+    Returns (peers, to_peers, gov) — `peers`/`to_peers` REPLACE the topology peer set so
+    the owner addresses every producer and voter directly; `gov` is the governance summary
+    augmented with the producer service list, vote weights, unresolved participants, owner
+    flags, the self service id, and the baked engine source. Returns None when the agent
+    has no governance, the policy is non-voting (Leader/Consensus/fallback keep the item-35
+    topology path), OR no producer resolves to a running service (a candidate-selection
+    vote needs at least one candidate — degrade to the item-35 single-round path).
+
+    PRODUCERS and VOTERS are decoupled (the design decision behind item 37):
+      * producers = the BPMN branches flowing into the gateway (``gov['producers']``,
+        stamped by the backend); each yields one round-1 candidate output;
+      * voters    = the policy's own participant list (``gov['participants']``); each casts
+        one round-2 ballot.
+    The owner produces a candidate only if it is itself a producer (``owner_produces``)
+    and votes only if it is itself a participant (``owner_votes``). Either set may include
+    the owner; both run in-process, never as a peer.
+    """
+    gov = _governance_for(agent)
+    if not gov:
+        return None
+    gov = dict(gov)  # copy — never mutate the shared summary on agent._governance
+    gov['is_voting'] = gov.get('policy_type') in _VOTING_POLICIES
+    if not gov['is_voting']:
+        return None
+
+    # Voters — from the policy participant list. weights[service] -> vote weight.
+    weights, voter_services, unresolved, owner_votes = {}, [], [], False
+    for p in (gov.get('participants') or []):
+        svc = _safe_service_name(p.get('name', ''))
+        conf = p.get('confidence')
+        w = conf if isinstance(conf, (int, float)) and conf > 0 else 1.0
+        if not svc:
+            continue
+        if svc == self_id:
+            owner_votes = True
+            weights[svc] = w            # owner votes in-process; keep its weight
+        elif svc in service_names:
+            if svc not in weights:
+                weights[svc] = w
+                voter_services.append(svc)
+        else:
+            unresolved.append(p.get('name', svc))   # voter with no service -> visible abstain
+
+    # Producers — from the BPMN flows into the gateway. owner produces in-process.
+    producer_services, owner_produces, seen_prod = [], False, set()
+    for name in (gov.get('producers') or []):
+        svc = _safe_service_name(name)
+        if not svc:
+            continue
+        if svc == self_id:
+            owner_produces = True
+        elif svc in service_names:
+            if svc not in seen_prod:
+                seen_prod.add(svc)
+                producer_services.append(svc)
+        else:
+            unresolved.append(name)                 # producing branch with no service
+
+    if not producer_services and not owner_produces:
+        return None     # no candidates possible -> fall back to the item-35 path
+
+    # The owner must reach producers (round 1) and the other voters (round 2): the peer
+    # set is their union, minus the owner (it runs both rounds in-process).
+    peers, seen_peer = [], set()
+    for i, svc in enumerate(producer_services + voter_services):
+        if svc in seen_peer:
+            continue
+        seen_peer.add(svc)
+        peers.append({'service': svc, 'kind': None, 'order': i, 'state': ''})
+
+    gov['weights'] = weights
+    gov['producer_services'] = producer_services
+    gov['owner_produces'] = owner_produces
+    gov['owner_votes'] = owner_votes
+    gov['unresolved'] = sorted(set(unresolved))
+    gov['self_service'] = self_id
+    gov['engine_src'] = _GOV_ENGINE_SRC
+    return peers, [p['service'] for p in peers], gov
 
 
 def _a2a_descriptor(agent, service_names: set, self_service: str = None) -> dict:
@@ -94,7 +186,7 @@ def _a2a_descriptor(agent, service_names: set, self_service: str = None) -> dict
     role = 'worker' if from_peers else 'entry'
     name = getattr(agent, 'name', 'Agent')
     sorted_peers = sorted(set(to_peers))
-    return {
+    descriptor = {
         'role': role,
         'agent_id': _safe_service_name(name),
         'to_peers': sorted_peers,
@@ -108,6 +200,12 @@ def _a2a_descriptor(agent, service_names: set, self_service: str = None) -> dict
         'governance': _governance_for(agent),
         'greeting': f"Hi! I'm {name}. Give me a task for the team.",
     }
+    # item 37 — a governed voting merge addresses the policy participant STAR, not the
+    # BPMN to_peers; override the peer set + attach weights/engine (guide 11 §1).
+    star = _governance_star(agent, service_names, self_id)
+    if star is not None:
+        descriptor['peers'], descriptor['to_peers'], descriptor['governance'] = star
+    return descriptor
 
 
 def _resolve_peer_service(edge: dict, service_names: set):
@@ -158,7 +256,7 @@ def _a2a_descriptor_from_tags(agent, service_names: set, self_service: str = Non
         actions = getattr(body, 'actions', None) if body else None
         if actions and actions[0].__class__.__name__ == 'LLMReply':
             prompt = getattr(actions[0], 'prompt', None) or prompt
-    return {
+    descriptor = {
         'role': role,
         'agent_id': _safe_service_name(name),
         'to_peers': [p['service'] for p in peers],     # back-compat (existing template/tests)
@@ -169,6 +267,12 @@ def _a2a_descriptor_from_tags(agent, service_names: set, self_service: str = Non
         'governance': _governance_for(agent),
         'greeting': f"Hi! I'm {name}. Give me a task for the team.",
     }
+    # item 37 — a governed voting merge addresses the policy participant STAR, not the
+    # BPMN to_peers; override the peer set + attach weights/engine (guide 11 §1).
+    star = _governance_star(agent, service_names, self_id)
+    if star is not None:
+        descriptor['peers'], descriptor['to_peers'], descriptor['governance'] = star
+    return descriptor
 
 
 class DockerComposeGenerator(GeneratorInterface):
