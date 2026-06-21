@@ -658,3 +658,72 @@ def test_convention_bake_unchanged_back_compat(tmp_path):
     # role split preserved: coder has an inbound from_supervisor → worker server
     coder_py = (tmp_path / "coder" / "Coder.py").read_text(encoding="utf-8")
     assert "use_a2a_platform" in coder_py
+
+
+# ---------------------------------------------------------------------------
+# Phase 3 — merge-path completions run at temperature 0, and the owner's own
+# ballot is validated (re-prompt) rather than trusted from a single completion.
+# ---------------------------------------------------------------------------
+
+def _voting_gov_summary(participants, producers):
+    return {"policy_type": "VotingPolicy", "ratio": 0.5, "requires_human": False,
+            "participants": participants, "producers": producers,
+            "instruction": "merge instruction", "summary": "policy facts", "raw": "raw"}
+
+
+def _p(name, confidence=0.8):
+    return {"name": name, "kind": "agent", "confidence": confidence, "roles": []}
+
+
+def test_governed_voting_bake_uses_low_temp_and_validates_owner_ballot(tmp_path):
+    import ast
+    model = _two_agent_swarm_model()
+    supervisor = _agent_with_a2a("AgentSupervisor", outbound=[
+        {"peer": "AgentCoder", "ref": "coder", "order": 1, "kind": "delegates",
+         "state": "coordinate"}])
+    # Supervisor (owner) votes; Coder produces and votes.
+    supervisor._governance = [_voting_gov_summary(
+        participants=[_p("AgentSupervisor", 0.9), _p("AgentCoder", 0.8)],
+        producers=["AgentCoder"])]
+    coder = _agent_with_a2a("AgentCoder", inbound=[
+        {"peer": "AgentSupervisor", "ref": "sup", "order": 9999, "kind": "delegates"}])
+
+    gen = DockerComposeGenerator(
+        model, output_dir=str(tmp_path),
+        agent_models_by_id={"sup": supervisor, "coder": coder})
+    gen.generate()
+
+    sup_py = (tmp_path / "agent_supervisor" / "AgentSupervisor.py").read_text(encoding="utf-8")
+    ast.parse(sup_py)                                   # emitted code must compile
+    assert 'MERGE_PARAMS = {"temperature": 0}' in sup_py
+    assert "parameters=MERGE_PARAMS" in sup_py          # merge-path predicts pinned
+    # the owner ballot goes through the validate/re-prompt helper, not a bare predict
+    assert "_gov_owner_ballot(session, cand_block, _ids)" in sup_py
+    assert "did NOT end with the" in sup_py             # the emphatic re-prompt text
+
+
+# ---------------------------------------------------------------------------
+# Phase 4 — an agent owning >1 governed merging gateway wires only the first,
+# but the drop is now VISIBLE (warning) rather than silent.
+# ---------------------------------------------------------------------------
+
+def test_multiple_governed_gateways_warns_and_wires_first(tmp_path, caplog):
+    import logging
+    model = _two_agent_swarm_model()
+    supervisor = _agent_with_a2a("AgentSupervisor", outbound=[
+        {"peer": "AgentCoder", "ref": "coder", "order": 1, "kind": "delegates",
+         "state": "coordinate"}])
+    # two governed gateways on the same owning lane → two summaries on one agent
+    supervisor._governance = [
+        _voting_gov_summary([_p("AgentSupervisor", 0.9), _p("AgentCoder", 0.8)], ["AgentCoder"]),
+        _voting_gov_summary([_p("AgentSupervisor", 0.5)], ["AgentSupervisor"]),
+    ]
+    coder = _agent_with_a2a("AgentCoder", inbound=[
+        {"peer": "AgentSupervisor", "ref": "sup", "order": 9999, "kind": "delegates"}])
+
+    gen = DockerComposeGenerator(
+        model, output_dir=str(tmp_path),
+        agent_models_by_id={"sup": supervisor, "coder": coder})
+    with caplog.at_level(logging.WARNING):
+        gen.generate()
+    assert any("owns 2 governed merging gateways" in r.message for r in caplog.records)

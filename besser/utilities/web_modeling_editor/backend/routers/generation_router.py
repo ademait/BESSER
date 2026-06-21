@@ -53,6 +53,7 @@ from besser.utilities.web_modeling_editor.backend.constants.user_buml_model impo
     domain_model as user_reference_domain_model,
 )
 from besser.utilities.web_modeling_editor.backend.services.governance.govdsl_runtime import (
+    build_default_summary,
     summarize_governance,
 )
 
@@ -701,8 +702,18 @@ def _attach_governance_to_agents(input_data, agent_models_by_id: dict) -> None:
             summary = summarize_governance(gov)
             if summary is None:
                 continue
-            summary["producers"] = _producer_agent_names(
+            producers = _producer_agent_names(
                 el.get("id"), rels, items_by_id, lane_ref, agent_models_by_id)
+            if summary.get("unparseable"):
+                # A broken .gov would otherwise degrade to a no-op raw-text directive.
+                # Recover the author's intended policy type from the raw text and build a
+                # REAL default policy over the collaboration participants — the gateway
+                # owner plus the agents whose branches flow into it (the traced producers)
+                # — so the merge still runs a genuine vote + deterministic tally.
+                participant_names = list(dict.fromkeys(producers + [agent.name]))
+                summary = build_default_summary(
+                    summary.get("detected_policy_type"), participant_names, gov)
+            summary["producers"] = producers
             existing = getattr(agent, "_governance", None) or []
             existing.append(summary)
             agent._governance = existing

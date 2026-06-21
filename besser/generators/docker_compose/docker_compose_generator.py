@@ -1,5 +1,6 @@
 """Docker Compose generator — turns a UML DeploymentModel into docker-compose.yml."""
 import inspect
+import logging
 import os
 import re
 
@@ -18,6 +19,8 @@ from besser.generators.agents.baf_generator import BAFGenerator
 # item 37 — the tested tally engine; its SOURCE is baked into governed agents (guide 12 §2).
 from besser.generators.agents import governance_engine as _gov_engine
 from besser.utilities import sort_by_timestamp
+
+logger = logging.getLogger(__name__)
 
 
 def _safe_service_name(name: str) -> str:
@@ -51,9 +54,22 @@ def _default_prompt(name: str, role: str) -> str:
 
 
 def _governance_for(agent):
-    """item 35 — the first governance summary stashed by the backend handler
-    (guide 10 §3a), or None. The generator forwards it verbatim; no parsing here."""
+    """The first governance summary stashed on the agent by the backend handler, or None.
+    The generator forwards it verbatim; no parsing here.
+
+    v1 wires exactly ONE governed merge per agent (the agent owns one merge/tally path in
+    its generated BAF state). An agent whose lane owns more than one governed merging
+    gateway is the unsupported case: only the first policy is wired, so emit a visible
+    warning rather than silently dropping the rest (per-gateway BAF states are future
+    work). The summaries are ordered as the gateways were encountered."""
     blobs = getattr(agent, '_governance', None) or []
+    if len(blobs) > 1:
+        logger.warning(
+            "[governance] agent %r owns %d governed merging gateways; v1 wires only the "
+            "first (%s). The remaining %d are dropped — split them across lanes/agents to "
+            "govern each separately.",
+            getattr(agent, 'name', '?'), len(blobs),
+            blobs[0].get('policy_type'), len(blobs) - 1)
     return blobs[0] if blobs else None
 
 
@@ -126,6 +142,16 @@ def _governance_star(agent, service_names: set, self_id: str):
             unresolved.append(name)                 # producing branch with no service
 
     if not producer_services and not owner_produces:
+        # A voting policy that resolves NO candidate producer cannot run a vote; the merge
+        # silently degraded to the single-round path before. Surface it: an empty
+        # gov['producers'] means the BPMN flow→lane→agent trace found nothing; a non-empty
+        # list that still resolves to no service means the producer agent names don't match
+        # any deployment artifact/service name.
+        logger.warning(
+            "[governance] voting policy on %r resolves no candidate producer to a running "
+            "service — the vote cannot run, so the merge falls back to a single round. "
+            "traced producers=%s | swarm services=%s",
+            self_id, gov.get('producers'), sorted(service_names))
         return None     # no candidates possible -> fall back to the item-35 path
 
     # The owner must reach producers (round 1) and the other voters (round 2): the peer

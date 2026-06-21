@@ -33,6 +33,11 @@ GOVERNANCE_INSTRUCTION = {{ a2a.governance.instruction | tojson }}
 GOVERNANCE_SUMMARY = {{ a2a.governance.summary | tojson }}
 # tojson would emit JS-style `true`/`false`; render a Python bool literal instead.
 GOVERNANCE_REQUIRES_HUMAN = {{ 'True' if a2a.governance.requires_human else 'False' }}
+# Merge-path completions (candidate / ballot / synthesis) are decision-bearing, not chat:
+# run them at temperature 0 so the same inputs yield the same answer and a ballot reliably
+# carries its `BALLOT:` line. Default-temperature peer replies are unaffected (each peer
+# runs its own LLM); this only pins the owner's own merge-path predicts.
+MERGE_PARAMS = {"temperature": 0}
 {% endif %}
 {% if a2a.governance and a2a.governance.is_voting %}
 # item 37 — exact governance vote tally. The owner runs a two-round candidate-selection
@@ -68,6 +73,24 @@ def _gov_footer(decision):
              f"{'met' if decision['met_ratio'] else 'BELOW'} ratio); "
              f"votes [{_t}]; abstain {decision['abstain']}")
     return _line
+
+def _gov_owner_ballot(session, cand_block, ids):
+    # The owner's own ballot must carry a parseable `BALLOT: C<k>` line. At temperature 0
+    # one completion is usually enough, but validate the structured output actually
+    # appeared and re-prompt once (more emphatic) before recording the owner as an abstain
+    # — so a single stray completion can't silently drop the owner's vote.
+    _msg = cand_block + BALLOT_INSTRUCTION
+    _txt = ""
+    for _attempt in range(2):
+        _txt = reply_llm.predict(message=_msg, session=session,
+                                 system_message=SYSTEM_PROMPT, parameters=MERGE_PARAMS)
+        if parse_ballot(_txt, ids) is not None:
+            return _txt
+        _msg = (cand_block + BALLOT_INSTRUCTION + "\n\nYour previous reply did NOT end with the "
+                "required `BALLOT: C<k>` line. Reply again, ending with exactly that line.")
+    logging.warning("[governance] owner ballot missing a valid BALLOT line after retry; "
+                    "recording the owner as an abstain")
+    return _txt
 {% endif %}
 
 {% if a2a.peers %}
@@ -203,7 +226,8 @@ def work_body(session: Session):
     for _i, (_svc, _lbl, _txt) in enumerate(parts, start=1):
         cid = f"C{_i}"; candidates.append({"id": cid, "producer": _svc}); cand_text[cid] = _txt
     if GOVERNANCE_OWNER_PRODUCES:
-        own = reply_llm.predict(message=task, session=session, system_message=SYSTEM_PROMPT)
+        own = reply_llm.predict(message=task, session=session,
+                                system_message=SYSTEM_PROMPT, parameters=MERGE_PARAMS)
         _own_id = f"C{len(candidates) + 1}"
         candidates.append({"id": _own_id, "producer": GOVERNANCE_SELF or "self"}); cand_text[_own_id] = own
     if not candidates:
@@ -223,8 +247,7 @@ def work_body(session: Session):
         ballots.append({"voter": _svc, "source": "agent", "vote": parse_ballot(_reply, _ids),
                         "weight": _gov_weight(_svc), "raw": _reply})
     if GOVERNANCE_OWNER_VOTES:
-        _own_vote = reply_llm.predict(message=cand_block + BALLOT_INSTRUCTION,
-                                      session=session, system_message=SYSTEM_PROMPT)
+        _own_vote = _gov_owner_ballot(session, cand_block, _ids)
         ballots.append({"voter": GOVERNANCE_SELF or "self", "source": "owner",
                         "vote": parse_ballot(_own_vote, _ids), "weight": _gov_weight(GOVERNANCE_SELF or ""),
                         "raw": _own_vote})
@@ -260,7 +283,7 @@ def work_body(session: Session):
                      + "\n\nCollaborators' replies:\n" + _pending["ctx"]
                      + "\n\nThe human's decision: " + task
                      + "\n\nProduce the final merged answer that honours the human's decision."),
-            session=session, system_message=sys_msg)
+            session=session, system_message=sys_msg, parameters=MERGE_PARAMS)
         session.reply(final)
         return
 {% endif %}
@@ -276,7 +299,7 @@ def work_body(session: Session):
         return
     sys_msg = SYSTEM_PROMPT + "\n\n" + GOVERNANCE_INSTRUCTION
     final = reply_llm.predict(message=f"Task: {task}\n\nCollaborators' replies:\n{ctx}",
-                              session=session, system_message=sys_msg)
+                              session=session, system_message=sys_msg, parameters=MERGE_PARAMS)
 {% else %}
     final = reply_llm.predict(message=f"Task: {task}\n\nTeam results:\n{ctx}",
                               session=session, system_message=SYSTEM_PROMPT)

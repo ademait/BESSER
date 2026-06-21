@@ -9,6 +9,8 @@ list is then empty and the ratio None by design, so the voting-path tests are sk
 import pytest
 
 from besser.utilities.web_modeling_editor.backend.services.governance.govdsl_runtime import (
+    _detect_policy_type,
+    build_default_summary,
     summarize_governance,
 )
 
@@ -52,11 +54,73 @@ def test_empty_input_returns_none():
 
 def test_fallback_path_has_empty_participants_and_no_ratio():
     # Unparseable text → raw-text fallback. The keys must still be present (uniform
-    # shape for the generator), but empty/None so no star can form.
+    # shape for the generator), but empty/None so no star can form here; the caller
+    # turns the `unparseable` signal into a real default policy over the producers.
     r = summarize_governance("this is not a valid .gov policy {{{")
     assert r["policy_type"] is None
     assert r["participants"] == []
     assert r["ratio"] is None
+    assert r["unparseable"] is True
+    assert r["detected_policy_type"] is None   # no policy-type keyword in the text
+
+
+# ---------------------------------------------------------------------------
+# Phase 1 — type-preserving default policy on an unparseable .gov.
+# ---------------------------------------------------------------------------
+
+@pytest.mark.parametrize("kw", [
+    "VotingPolicy", "MajorityPolicy", "AbsoluteMajorityPolicy",
+    "LeaderDrivenPolicy", "ConsensusPolicy", "LazyConsensusPolicy",
+])
+def test_detect_policy_type_finds_each_keyword(kw):
+    # The keyword survives a broken body (the common failure is the missing //-comment
+    # lexer rule, which leaves the type keyword intact), so it is recoverable from raw text.
+    assert _detect_policy_type(f"// header\n{kw} broken {{{{{{ not valid") == kw
+
+
+def test_detect_policy_type_longest_match_wins():
+    # 'AbsoluteMajorityPolicy' must not be misread as 'MajorityPolicy', nor
+    # 'LazyConsensusPolicy' as 'ConsensusPolicy'.
+    assert _detect_policy_type("AbsoluteMajorityPolicy p { ... }") == "AbsoluteMajorityPolicy"
+    assert _detect_policy_type("LazyConsensusPolicy p { ... }") == "LazyConsensusPolicy"
+
+
+def test_detect_policy_type_none_when_absent():
+    assert _detect_policy_type("no policy keyword at all {{{") is None
+    assert _detect_policy_type("") is None
+
+
+def test_unparseable_signal_carries_detected_type():
+    r = summarize_governance("// hdr\nAbsoluteMajorityPolicy totally broken {{{")
+    assert r["unparseable"] is True
+    assert r["detected_policy_type"] == "AbsoluteMajorityPolicy"
+
+
+@pytest.mark.parametrize("ptype", ["VotingPolicy", "MajorityPolicy", "AbsoluteMajorityPolicy"])
+def test_build_default_summary_voting_type_preserved_with_default_ratio(ptype):
+    s = build_default_summary(ptype, ["AgentA", "AgentB"], raw_text="raw")
+    assert s["policy_type"] == ptype
+    assert s["ratio"] == 0.5                       # voting family → documented default
+    assert s["requires_human"] is False
+    assert s["synthesized_default"] is True
+    assert [p["name"] for p in s["participants"]] == ["AgentA", "AgentB"]
+    assert all(p["kind"] == "agent" and p["confidence"] is None for p in s["participants"])
+    assert s["raw"] == "raw"
+
+
+@pytest.mark.parametrize("ptype", ["LeaderDrivenPolicy", "ConsensusPolicy", "LazyConsensusPolicy"])
+def test_build_default_summary_non_voting_type_has_no_ratio(ptype):
+    s = build_default_summary(ptype, ["AgentA"], raw_text="raw")
+    assert s["policy_type"] == ptype
+    assert s["ratio"] is None                      # non-voting → no ratio
+    # a non-voting merge must NOT ask the LLM to narrate a vote
+    assert "Votes:" not in s["instruction"]
+
+
+def test_build_default_summary_no_keyword_falls_back_to_majority():
+    s = build_default_summary(None, ["AgentA", "AgentB"])
+    assert s["policy_type"] == "MajorityPolicy"
+    assert s["ratio"] == 0.5
 
 
 @pytest.mark.skipif(not _parser_available(),

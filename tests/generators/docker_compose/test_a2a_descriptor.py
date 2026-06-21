@@ -228,6 +228,25 @@ def test_no_governance_descriptor_unchanged():
     assert d["governance"] is None
 
 
+def test_synthesized_default_policy_forms_a_star_with_unit_weights():
+    # Phase 1 — a default policy synthesized for an unparseable .gov carries participants
+    # with confidence None (no author weights). The star must still form, each voter
+    # weighted 1.0 (the _governance_star confidence fallback).
+    from besser.utilities.web_modeling_editor.backend.services.governance.govdsl_runtime import (
+        build_default_summary,
+    )
+    sup = _A('Supervisor', [])
+    summary = build_default_summary("MajorityPolicy", ["Coder", "Supervisor"], raw_text="raw")
+    summary["producers"] = ["Coder", "Supervisor"]
+    sup._governance = [summary]
+    d = _a2a_descriptor(sup, {"supervisor", "coder"}, self_service="supervisor")
+    gov = d["governance"]
+    assert gov["is_voting"] is True
+    assert gov["weights"] == {"coder": 1.0, "supervisor": 1.0}   # confidence None → 1.0
+    assert gov["owner_votes"] is True
+    assert gov["producer_services"] == ["coder"]
+
+
 def test_governed_voting_star_via_tags_path():
     # the preferred (tags) builder must apply the same star override.
     sup = _tagged('Supervisor', outbound=[
