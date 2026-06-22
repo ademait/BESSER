@@ -24,7 +24,7 @@ agent.set_default_ic_config(LLMIntentClassifierConfiguration(
     use_entity_descriptions=False, use_entity_synonyms=False))
 
 SYSTEM_PROMPT = {{ a2a.prompt | tojson }}
-{% if a2a.governance %}
+{% if a2a.governance and not a2a.states %}
 # item 35 — governance policy authored on the BPMN merging gateway, parsed at generation
 # time into a runtime instruction (guide 10 §2, Option B+). The LLM enforces it; if a human
 # participant is in the policy, defer the decision to the human via the UI instead.
@@ -39,7 +39,7 @@ GOVERNANCE_REQUIRES_HUMAN = {{ 'True' if a2a.governance.requires_human else 'Fal
 # runs its own LLM); this only pins the owner's own merge-path predicts.
 MERGE_PARAMS = {"temperature": 0}
 {% endif %}
-{% if a2a.governance and a2a.governance.is_voting %}
+{% if a2a.governance and a2a.governance.is_voting and not a2a.states %}
 # item 37 — exact governance vote tally. The owner runs a two-round candidate-selection
 # vote, counted deterministically in-container by the baked engine below (guide 12 §2).
 # PRODUCERS and VOTERS are decoupled: round 1 collects one candidate from each producer
@@ -93,7 +93,7 @@ def _gov_owner_ballot(session, cand_block, ids):
     return _txt
 {% endif %}
 
-{% if a2a.peers %}
+{% if a2a.peers or a2a.states or a2a.merge_sends %}
 # ── A2A client: fan out to every replica of each downstream peer (plan §5, Q4) ──
 def _peer_replica_urls(service, port=8000):
     # Docker embedded DNS returns one A-record per running replica (R1: plain-compose
@@ -105,9 +105,21 @@ def _peer_replica_urls(service, port=8000):
         ips = []
     return [f"http://{ip}:{port}" for ip in ips] or [f"http://{service}:{port}"]
 
+{% if a2a.has_merge_targets or a2a.states %}
+def _a2a_call(base_url, agent_id, message, flow=None):
+    # 35b-5 / B3 — when this edge feeds a governed merging gateway, tag the message with
+    # the target gateway id (`flow`) so the owner dispatches it to the right merge state
+    # (PUSH: the message IS the candidate). Omitted for non-merge edges (legacy shape).
+    _params = {"message": message}
+    if flow:
+        _params["flow"] = flow
+    body = json.dumps({"jsonrpc": "2.0", "agent_id": agent_id, "method": "handle",
+                       "params": _params, "id": 1}).encode()
+{% else %}
 def _a2a_call(base_url, agent_id, message):
     body = json.dumps({"jsonrpc": "2.0", "agent_id": agent_id, "method": "handle",
                        "params": {"message": message}, "id": 1}).encode()
+{% endif %}
     req = urllib.request.Request(f"{base_url}/a2a", data=body,
                                  headers={"Content-Type": "application/json"})
     with urllib.request.urlopen(req, timeout=120) as r:
@@ -136,7 +148,11 @@ async def _fanout(task, only=None):
         _msg = _frame.format(task=task)
         _urls = _peer_replica_urls("{{ peer.service }}")
         for _i, url in enumerate(_urls):
+{% if (a2a.has_merge_targets or a2a.states) and peer.target_gateway %}
+            coros.append(asyncio.to_thread(_a2a_call, url, "{{ peer.service }}", _msg, {{ peer.target_gateway | tojson }}))
+{% else %}
             coros.append(asyncio.to_thread(_a2a_call, url, "{{ peer.service }}", _msg))
+{% endif %}
             # When a service runs >1 replica (BPMN lane multiplicity), suffix the instance
             # index so the merge point — and any governance vote — can tell the copies
             # apart (guide 10 G1). Single-replica services keep their plain name.
@@ -160,14 +176,175 @@ def _run_fanout(message, only=None):
     _t = threading.Thread(target=lambda: _res.extend(asyncio.run(_fanout(message, only))), daemon=True)
     _t.start(); _t.join(timeout=300)
     return _res
+{% if a2a.merge_sends %}
+
+# ── 35b-5 entry un-flatten: faithful sequential governed-merge pipeline ───────────────
+# This agent feeds more than one governed merging gateway (often the SAME owner). The
+# authored flow visits each merge in turn, so the swarm must too — a single deduped fan-out
+# would collapse them. _merge_send delivers one PUSH to a merge owner (tagged with the
+# gateway id so the owner runs THAT merge) and returns its merged result; _run_merge_pipeline
+# threads the task through the merges in authored order, each stage feeding the next.
+_MERGE_PIPELINE = [
+{% for send in a2a.merge_sends %}
+    ({{ send.service | tojson }}, {{ send.target_gateway | tojson }}),
+{% endfor %}
+]
+
+def _a2a_call_full(base_url, agent_id, message, flow):
+    # Like _a2a_call but returns the WHOLE result envelope, so the initiator can see a
+    # `gov_pending` a merge owner attaches when it pauses for human approval (O1).
+    body = json.dumps({"jsonrpc": "2.0", "agent_id": agent_id, "method": "handle",
+                       "params": {"message": message, "flow": flow}, "id": 1}).encode()
+    req = urllib.request.Request(f"{base_url}/a2a", data=body,
+                                 headers={"Content-Type": "application/json"})
+    with urllib.request.urlopen(req, timeout=120) as r:
+        return json.loads(r.read()).get("result") or {}
+
+def _merge_send(message, service, flow):
+    # One pipeline stage: PUSH to the merge owner; return (merged_text, gov_pending|None).
+    _text, _pending = message, None
+    for _url in _peer_replica_urls(service):
+        try:
+            _res = _a2a_call_full(_url, service, message, flow)
+        except Exception as _e:                       # peer down / call failed → skip replica
+            logging.warning("_merge_send: %s (%s) raised %s", service, flow, _e)
+            continue
+        if _res.get("reply"):
+            _text = _res["reply"]
+        if _res.get("gov_pending"):                   # owner paused for human approval (O1)
+            _pending = _res["gov_pending"]
+    return _text, _pending
+
+def _run_merge_pipeline(task):
+    # Headless initiator (no human UI): thread the task through each merge. If an owner pauses
+    # for human approval a headless caller can't resolve it — return the approval notice as-is.
+    _result = task
+    for _service, _flow in _MERGE_PIPELINE:
+        _result, _pending = _merge_send(_result, _service, _flow)
+        if _pending:
+            return _result
+    return _result
+{% endif %}
+{% endif %}
+{% if a2a.states or a2a.merge_sends %}
+
+# ── 35b-5 governance runtime: frozen tally engine + shared helpers (baked once) ──────
+# Baked for any agent that OWNS a governed merge (dispatches the vote) OR INITIATES a
+# governed-merge pipeline (finalizes a human-approved stage, O1). PRODUCERS/VOTERS stay
+# decoupled; the engine is the item-37 module, unchanged. Each merge is just a new caller.
+MERGE_PARAMS = {"temperature": 0}
+BALLOT_INSTRUCTION = ("\n\nYou are voting under a governance policy. Review ALL the candidate "
+                      "outputs above and choose the single best one. End your reply with exactly "
+                      "one line `BALLOT: C<k>` (e.g. `BALLOT: C2`), then one sentence of rationale.")
+
+{{ a2a.engine_src }}
+
+def _fm_weight(voter, weights):
+    base = voter.split('#', 1)[0]   # strip a replica suffix (agent_x#2 -> agent_x)
+    w = weights.get(base)
+    return float(w) if isinstance(w, (int, float)) else 1.0
+
+def _fm_footer(decision):
+    _t = ", ".join(f"{k}={v:g}" for k, v in decision["scores"].items())
+    return ("\n\n— governance —\n"
+            f"policy {decision['policy']} (ratio {decision['ratio']}); "
+            f"winner {decision['outcome']} (share {decision['share']:g}, "
+            f"{'met' if decision['met_ratio'] else 'BELOW'} ratio); "
+            f"votes [{_t}]; abstain {decision['abstain']}")
+{% endif %}
+{% if a2a.states %}
+
+# ── faithful per-merge governed dispatch (this agent OWNS the merges) ─────────────────
+# Per-merge configuration, keyed by the binding gateway id (== the producer's `flow` tag).
+_MERGES = {
+{% for st in a2a.states %}
+    {{ st.merge_key | tojson }}: {{ st.merge_config_py }},
+{% endfor %}
+}
+
+def _fm_owner_ballot(cand_block, ids):
+    # The owner's own ballot must carry a parseable `BALLOT: C<k>` line; validate + re-prompt
+    # once at temperature 0 before recording it as an abstain (mirrors the single-merge path).
+    _msg = cand_block + BALLOT_INSTRUCTION
+    _txt = ""
+    for _attempt in range(2):
+        _txt = reply_llm.predict(message=_msg, session=None, system_message=SYSTEM_PROMPT,
+                                 parameters=MERGE_PARAMS)
+        if parse_ballot(_txt, ids) is not None:
+            return _txt
+        _msg = (cand_block + BALLOT_INSTRUCTION + "\n\nYour previous reply did NOT end with the "
+                "required `BALLOT: C<k>` line. Reply again, ending with exactly that line.")
+    logging.warning("[governance] owner ballot missing a valid BALLOT line after retry; abstaining")
+    return _txt
+
+async def _run_merge(cfg, task, params):
+    # PUSH model — the producer's output (this incoming message) IS the candidate that tripped
+    # the guarded transition into this merge state. The owner may also self-produce in-process.
+    candidates = [{"id": "C1", "producer": params.get("from") or "producer"}]
+    cand_text = {"C1": task}
+    if cfg["owner_produces"]:
+        _own = reply_llm.predict(message=task, session=None, system_message=SYSTEM_PROMPT,
+                                 parameters=MERGE_PARAMS)
+        _cid = f"C{len(candidates) + 1}"
+        candidates.append({"id": _cid, "producer": cfg["self"]}); cand_text[_cid] = _own
+    if not cfg["is_voting"]:
+        # Non-voting policy (Leader/Consensus/Lazy): single-round merge of the pushed candidate.
+        _sys = SYSTEM_PROMPT + (("\n\n" + cfg["instruction"]) if cfg["instruction"] else "")
+        _final = reply_llm.predict(message=f"Candidate to finalize:\n{task}", session=None,
+                                   system_message=_sys, parameters=MERGE_PARAMS)
+        return {"reply": _final}
+    _ids = [c["id"] for c in candidates]
+    cand_block = "\n\n".join(f"[{c['id']}] (from {c['producer']})\n{cand_text[c['id']]}"
+                             for c in candidates)
+    # Round 2 — one ballot from each resolvable voter (policy participants minus the owner).
+    ballots = []
+    _voters = set(cfg["weights"]) - {cfg["self"]}
+    if _voters:
+        for _svc, _lbl, _reply in _run_fanout(cand_block + BALLOT_INSTRUCTION, only=_voters):
+            ballots.append({"voter": _svc, "source": "agent", "vote": parse_ballot(_reply, _ids),
+                            "weight": _fm_weight(_svc, cfg["weights"]), "raw": _reply})
+    if cfg["owner_votes"]:
+        _ob = _fm_owner_ballot(cand_block, _ids)
+        ballots.append({"voter": cfg["self"], "source": "owner", "vote": parse_ballot(_ob, _ids),
+                        "weight": _fm_weight(cfg["self"], cfg["weights"]), "raw": _ob})
+    for _name in cfg["unresolved"]:                 # participant with no running service
+        ballots.append({"voter": _name, "source": "agent", "vote": None, "weight": 1.0, "raw": ""})
+    if cfg["requires_human"]:
+        # O1 — a headless worker cannot prompt the human locally. Surface the candidate slate +
+        # the agent/owner ballots up to the ENTRY (which owns the websocket UI); the entry takes
+        # the human ballot and runs the final tally. The merge PAUSES here pending that step.
+        return {"reply": "A governance policy requires human approval before merging.\n\n"
+                + cfg["summary"] + "\n\nCandidate outputs:\n" + cand_block,
+                "gov_pending": {"gateway": params.get("flow"), "policy_type": cfg["policy_type"],
+                                "ratio": cfg["ratio"], "candidates": candidates,
+                                "cand_text": cand_text, "ballots": ballots}}
+    _decision = tally(cfg["policy_type"], cfg["ratio"], candidates, ballots)
+    logging.info("[governance] %s", json.dumps(_decision))
+    # Present the winner VERBATIM — it is already a complete producer answer; the deterministic
+    # footer is the single source of truth for the tally.
+    _win = cand_text.get(_decision["outcome"]) or next(iter(cand_text.values()), "")
+    return {"reply": _win + _fm_footer(_decision)}
 {% endif %}
 
-{% if a2a.role == 'worker' %}
+{% if a2a.a2a_server %}
 # ── Headless worker: expose an A2A server; handle() runs the LLM (+ optional fan-out) ──
 a2a_platform = agent.use_a2a_platform()
 
 async def handle(**params):
     task = params.get("message", "")
+{% if a2a.states %}
+    # 35b-5 — a PUSH-tagged message (flow == a governed gateway) is dispatched to that merge's
+    # governed vote; an untagged/unknown message falls through below.
+    _cfg = _MERGES.get(params.get("flow"))
+    if _cfg is not None:
+        return await _run_merge(_cfg, task, params)
+{% endif %}
+{% if a2a.merge_sends %}
+    # 35b-5 entry un-flatten — a kickoff message (no governed flow of our own) makes this
+    # agent the INITIATOR: thread the task through the authored governed-merge pipeline, each
+    # stage PUSHed to its owner and feeding the next. Returns the final merged result.
+    return {"reply": _run_merge_pipeline(task)}
+{% endif %}
     reply = reply_llm.predict(message=task, session=None, system_message=SYSTEM_PROMPT)
 {% if a2a.peers %}
     parts = await _fanout(reply)
@@ -178,13 +355,16 @@ async def handle(**params):
 {% endif %}
 
 a2a_platform.router.register("handle", handle)
+{% if not a2a.human_facing %}
 # BAF runs train() on agent.run(), which needs exactly one initial state even for an
 # A2A-only worker whose real entry is handle() above (R5).
 idle = agent.new_state('idle', initial=True)
 def idle_body(session: Session):
     pass
 idle.set_body(idle_body)
-{% else %}
+{% endif %}
+{% endif %}
+{% if a2a.human_facing %}
 # ── Entry (human-facing): websocket UI; work state fans out + synthesizes (plan §3) ──
 platform = agent.use_websocket_platform(use_ui=True)
 
@@ -198,8 +378,42 @@ greetings.when_no_intent_matched().go_to(work)
 
 def work_body(session: Session):
     task = session.event.message
+{% if a2a.merge_sends %}
+    # 35b-5 entry un-flatten + O1 HITL — drive the authored governed-merge pipeline: thread the
+    # human's task through each merge owner in turn (PUSH-tagged), each merged result feeding the
+    # next. Replaces the single deduped fan-out so MULTIPLE governed merges each run, in order.
+    # If a stage's owner pauses for human approval (requires_human → gov_pending), present the
+    # slate, stash the remaining pipeline, and finalize on the human's NEXT message (O1).
+    _resume = session.get("pipeline_pending")
+    if _resume:
+        # The human's message IS the ballot for the paused governed merge. Add it, tally, and
+        # the finalized winner becomes this stage's result; then resume the remaining stages.
+        session.delete("pipeline_pending")
+        _pend = _resume["pending"]
+        _ids = [c["id"] for c in _pend["candidates"]]
+        _hb = {"voter": "human", "source": "human", "weight": 1.0, "raw": task,
+               "vote": parse_ballot(task, _ids) or parse_ballot("BALLOT: " + task.strip(), _ids)}
+        _decision = tally(_pend["policy_type"], _pend["ratio"], _pend["candidates"],
+                          _pend["ballots"] + [_hb])
+        logging.info("[governance] %s", json.dumps(_decision))
+        _win = _pend["cand_text"].get(_decision["outcome"]) or next(iter(_pend["cand_text"].values()), "")
+        _result = _win + _fm_footer(_decision)
+        _stages = list(_resume["remaining"])
+    else:
+        _result, _stages = task, list(_MERGE_PIPELINE)
+    while _stages:
+        _service, _flow = _stages.pop(0)
+        _result, _pending = _merge_send(_result, _service, _flow)
+        if _pending:
+            # Owner paused for human approval — present the slate, stash the rest, await ballot.
+            session.set("pipeline_pending", {"pending": _pending, "remaining": _stages})
+            session.reply(_result + "\n\nReply with the ID you choose (e.g. C2).")
+            return
+    session.reply(_result)
+    return
+{% endif %}
 {% if a2a.peers %}
-{% if a2a.governance and a2a.governance.is_voting %}
+{% if a2a.governance and a2a.governance.is_voting and not a2a.states %}
     # ── item 37: governed candidate-selection vote ────────────────────────────────
     # Phase 2: a human ballot is pending → this message IS the human's chosen candidate.
     _pending = session.get("gov_pending")
@@ -271,7 +485,7 @@ def work_body(session: Session):
     _win = cand_text.get(_decision["outcome"]) or next(iter(cand_text.values()), "")
     final = _win + _gov_footer(_decision)
 {% else %}
-{% if a2a.governance %}
+{% if a2a.governance and not a2a.states %}
     # Human-in-the-loop phase 2 (item 35, non-voting policies): this message IS the
     # human's decision. Apply it to the stashed candidates WITHOUT re-running the swarm.
     _pending = session.get("gov_pending")
@@ -289,7 +503,7 @@ def work_body(session: Session):
 {% endif %}
     parts = _run_fanout(task)
     ctx = "\n\n".join(f"[{name} · {label}]\n{txt}" for name, label, txt in parts)
-{% if a2a.governance %}
+{% if a2a.governance and not a2a.states %}
     if GOVERNANCE_REQUIRES_HUMAN:
         session.set("gov_pending", {"task": task, "ctx": ctx})
         session.reply("A governance policy requires human approval before merging.\n\n"

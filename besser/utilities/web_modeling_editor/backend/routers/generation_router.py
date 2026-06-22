@@ -656,6 +656,26 @@ def _producer_agent_names(gateway_id, relationships, items_by_id, lane_ref,
     return names
 
 
+def _merge_state_for_gateway(agent, gateway_id) -> str:
+    """35b-5 / B1 — resolve the AgentState a governed gateway binds to (WME's W3
+    ``"Address merge decision"`` state), via the ``a2a:in;flow=<gateway-id>`` marker the
+    a2a parser stashes on ``agent._a2a['inbound']`` (each inbound edge carries ``flow`` =
+    the gateway id and ``target_state`` = the state the guarded transition leads into).
+
+    Returns the bound state name, or None when no inbound edge carries this gateway's
+    flow — i.e. the WME W3 binding is absent (the live frontend emits none of it today),
+    so governance falls back to the flat ``agent._governance`` list. Dormant per-state
+    keying: it feeds ``agent._governance_by_state`` until the WME contract lands.
+    """
+    if not gateway_id:
+        return None
+    tags = getattr(agent, "_a2a", None) or {}
+    for edge in tags.get("inbound", []):
+        if edge.get("flow") and edge.get("flow") == gateway_id:
+            return edge.get("target_state") or edge.get("source_state") or None
+    return None
+
+
 def _attach_governance_to_agents(input_data, agent_models_by_id: dict) -> None:
     """item 35 — map each agentic merging gateway's governanceDsl onto the BUML Agent
     of its owning lane, as ``agent._governance`` (a list of summary dicts from
@@ -666,6 +686,12 @@ def _attach_governance_to_agents(input_data, agent_models_by_id: dict) -> None:
     item 37 — also stamps each summary with ``producers`` (the BPMN-derived candidate
     producers; see ``_producer_agent_names``) so the generator can run the star vote
     with producers and voters as decoupled sets.
+
+    35b-5 / B1 — when WME's W3 ``flow=`` binding is present, ALSO key the summary per
+    merge STATE on ``agent._governance_by_state`` (so a lane owning several governed
+    gateways governs each at its own state). The flat ``agent._governance`` list is kept
+    as the back-compat fallback that the live (single-merge) render still reads, so an
+    agent without the W3 binding renders byte-for-byte as today.
     """
     # The project payload keys BPMN diagrams under "BPMN" (the WME export/request
     # short name); "BPMNDiagram" is the backend-internal discriminator used by the
@@ -689,6 +715,30 @@ def _attach_governance_to_agents(input_data, agent_models_by_id: dict) -> None:
             for el in items
             if isinstance(el, dict) and el.get("type") == "BPMNSwimlane"
         }
+        # 35b-5 / B3 routing — a producer's outbound A2A message must be dispatched to the
+        # right merge state on the owner. The producer's `a2a:out` carries the BPMN
+        # SEQUENCE-FLOW id; that flow's TARGET is the governed gateway. Build {flow id →
+        # governed gateway id} so each producer's outbound edge can be stamped with the
+        # gateway it feeds (`target_gateway`), and the owner dispatches on that key (PUSH:
+        # the triggering message is the candidate). Non-governed targets are omitted.
+        gov_gateway_ids = {
+            el.get("id") for el in items
+            if isinstance(el, dict) and el.get("type") == "BPMNGateway"
+            and el.get("governanceDsl")
+        }
+        flow_to_gov_gateway = {}
+        for rel in rels:
+            if not isinstance(rel, dict):
+                continue
+            tgt = (rel.get("target") or {}).get("element")
+            if tgt in gov_gateway_ids:
+                flow_to_gov_gateway[rel.get("id")] = tgt
+        if flow_to_gov_gateway:
+            for agent in agent_models_by_id.values():
+                for edge in (getattr(agent, "_a2a", None) or {}).get("outbound", []):
+                    gw = flow_to_gov_gateway.get(edge.get("flow"))
+                    if gw:
+                        edge["target_gateway"] = gw
         for el in items:
             if not isinstance(el, dict) or el.get("type") != "BPMNGateway":
                 continue
@@ -714,9 +764,110 @@ def _attach_governance_to_agents(input_data, agent_models_by_id: dict) -> None:
                 summary = build_default_summary(
                     summary.get("detected_policy_type"), participant_names, gov)
             summary["producers"] = producers
+            # 35b-5 / B1 — per-state keying when the W3 binding resolves (dormant until
+            # WME emits flow=); purely additive, so the flat list below is unchanged.
+            state_name = _merge_state_for_gateway(agent, el.get("id"))
+            if state_name:
+                # Stash the binding gateway id on the summary so the state-aware descriptor
+                # can emit it as the owner's per-merge dispatch key (matched against the
+                # producer's stamped `target_gateway`).
+                summary["gateway_id"] = el.get("id")
+                summary["merge_state"] = state_name
+                by_state = getattr(agent, "_governance_by_state", None)
+                if by_state is None:
+                    by_state = {}
+                    agent._governance_by_state = by_state
+                by_state[state_name] = summary
             existing = getattr(agent, "_governance", None) or []
             existing.append(summary)
             agent._governance = existing
+
+
+def _attach_entry_role_to_agents(input_data, agent_models_by_id: dict) -> None:
+    """Derive each agent's HUMAN-FACING (entry) role from the BPMN and stamp it as
+    ``agent._human_facing = True``. Mirrors ``_attach_governance_to_agents``: the compose
+    path never loads the BPMN model, so read the raw BPMN JSON here and resolve lanes →
+    agents via ``BPMNSwimlane.agentDiagramRef``.
+
+    A lane is human-facing (the swarm's user-facing trigger) when, in the BPMN, it:
+      1. OWNS a start event (``BPMNStartEvent.owner`` is that lane), OR
+      2. is the TARGET of a start event's outgoing flow (the start sits outside a lane —
+         e.g. on the pool — but kicks off a task in that lane), OR
+      3. has an incoming sequence/message flow from a NON-agentic source (a lane with no
+         ``agentDiagramRef``, a pool, or an unlaned node — i.e. a human/external actor).
+
+    This is AUTHORITATIVE: unlike the legacy "no inbound A2A peer ⇒ entry" heuristic, a
+    human-facing lane that ALSO receives A2A back-edges (a reviewer/coordinator owning the
+    start event and the governed merge gateways) is still correctly an entry. No-op when
+    there is no BPMN diagram or no start event resolves to a linked agentic lane — the
+    generator then falls back to the legacy heuristic, so legacy renders stay byte-identical.
+    """
+    bpmn_entries = (input_data.diagrams.get("BPMNDiagram")
+                    or input_data.diagrams.get("BPMN")
+                    or [])
+    for entry in bpmn_entries:
+        entry_dict = entry.model_dump() if hasattr(entry, "model_dump") else entry
+        if not isinstance(entry_dict, dict):
+            continue
+        model = entry_dict.get("model") or {}
+        elements = model.get("elements") or {}
+        items = list(elements.values() if isinstance(elements, dict) else elements)
+        relationships = model.get("relationships") or {}
+        rels = list(relationships.values() if isinstance(relationships, dict) else relationships)
+        items_by_id = {el.get("id"): el for el in items if isinstance(el, dict)}
+        # lane id → its agentDiagramRef. A lane present here but with a falsy ref is
+        # NON-agentic (a human/external lane), which is what makes rule 3 fire.
+        lane_ref = {
+            el.get("id"): el.get("agentDiagramRef")
+            for el in items
+            if isinstance(el, dict) and el.get("type") == "BPMNSwimlane"
+        }
+        agentic_lanes = {lid for lid, ref in lane_ref.items() if ref}
+
+        def _stamp(lane_id):
+            ref = lane_ref.get(lane_id)
+            agent = agent_models_by_id.get(ref) if ref else None
+            if agent is not None:
+                agent._human_facing = True
+
+        # Rules 1 & 2 — start events: stamp the owning lane and any lane a start-event
+        # outgoing flow targets.
+        start_ids = {
+            el.get("id") for el in items
+            if isinstance(el, dict) and el.get("type") == "BPMNStartEvent"
+        }
+        for el in items:
+            if not isinstance(el, dict) or el.get("type") != "BPMNStartEvent":
+                continue
+            _stamp(el.get("owner"))
+        for rel in rels:
+            if not isinstance(rel, dict):
+                continue
+            if (rel.get("source") or {}).get("element") not in start_ids:
+                continue
+            tgt = items_by_id.get((rel.get("target") or {}).get("element"))
+            if isinstance(tgt, dict):
+                _stamp(tgt.get("owner"))
+
+        # Rule 3 — a flow from a non-agentic source into an agentic lane (human handoff).
+        for rel in rels:
+            if not isinstance(rel, dict):
+                continue
+            src = items_by_id.get((rel.get("source") or {}).get("element"))
+            tgt = items_by_id.get((rel.get("target") or {}).get("element"))
+            if not isinstance(tgt, dict):
+                continue
+            tgt_lane = tgt.get("owner")
+            if tgt_lane not in agentic_lanes:
+                continue
+            src_lane = src.get("owner") if isinstance(src, dict) else None
+            # A start event was already handled above; an agent-to-agent flow (source in an
+            # agentic lane) is A2A, not human-facing; an intra-lane flow is internal.
+            if src_lane in agentic_lanes or src_lane == tgt_lane:
+                continue
+            if isinstance(src, dict) and src.get("type") == "BPMNStartEvent":
+                continue
+            _stamp(tgt_lane)
 
 
 @handle_endpoint_errors("_handle_deployment_project_generation")
@@ -769,6 +920,12 @@ async def _handle_deployment_project_generation(
         # raw BPMN JSON, parse it (guide 10 §3.0), and stash a runtime instruction on
         # the agent whose lane owns the gateway, for injection into its synthesis.
         _attach_governance_to_agents(input_data, agent_models_by_id)
+
+        # Derive the human-facing (entry) role from the BPMN start event, so a coordinator
+        # lane that owns the start event AND receives A2A back-edges (a governed merge
+        # owner) is still correctly an entry — it runs the UI + publishes ports AND keeps
+        # its A2A server. Authoritative over the generator's legacy no-inbound heuristic.
+        _attach_entry_role_to_agents(input_data, agent_models_by_id)
 
         generator_class = generator_info.generator_class
         generator_instance = generator_class(

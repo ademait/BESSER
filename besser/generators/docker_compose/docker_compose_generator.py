@@ -53,6 +53,31 @@ def _default_prompt(name: str, role: str) -> str:
             f"you are given concisely; if you received collaborator inputs, use them.")
 
 
+def _facing_flags(agent, has_inbound_peer: bool):
+    """Decouple the two capabilities the legacy single ``role`` conflated:
+
+    - ``human_facing`` — runs the websocket/Streamlit UI and publishes the host ports.
+      AUTHORITATIVE when the backend stamped ``agent._human_facing`` (derived from the
+      BPMN start event / a non-agentic inbound flow; see ``_attach_entry_role_to_agents``).
+      When the flag is ABSENT (no BPMN, single-diagram, or a unit test) it falls back to
+      the legacy heuristic ``not has_inbound_peer`` — i.e. an agent with no inbound A2A
+      peer is the entry — so legacy renders stay byte-identical.
+    - ``a2a_server`` — has ≥1 inbound A2A peer that resolves to a running service, so it
+      must run the headless A2A server on 8000 to receive pushes. Computed from the
+      topology exactly as before, independent of ``human_facing``.
+
+    An agent can be BOTH (e.g. a reviewer/coordinator that owns the BPMN start event AND
+    owns the governed merge gateways the producers push into): it runs both platforms and
+    publishes both port sets. ``role`` is kept (derived) only for back-compat (the legacy
+    descriptor key, the bake log line, and the default-prompt framing).
+    """
+    flag = getattr(agent, '_human_facing', None)
+    human_facing = (not has_inbound_peer) if flag is None else bool(flag)
+    a2a_server = bool(has_inbound_peer)
+    role = 'entry' if human_facing else 'worker'
+    return human_facing, a2a_server, role
+
+
 def _governance_for(agent):
     """The first governance summary stashed on the agent by the backend handler, or None.
     The generator forwards it verbatim; no parsing here.
@@ -63,7 +88,10 @@ def _governance_for(agent):
     warning rather than silently dropping the rest (per-gateway BAF states are future
     work). The summaries are ordered as the gateways were encountered."""
     blobs = getattr(agent, '_governance', None) or []
-    if len(blobs) > 1:
+    # 35b-5 — a W3-bound agent governs EACH merge at its own state (`_governance_by_state`
+    # → the faithful `_MERGES` dispatch), so nothing is dropped: suppress the legacy
+    # "only the first is wired" warning. It still fires for an un-bound multi-gateway agent.
+    if len(blobs) > 1 and not getattr(agent, '_governance_by_state', None):
         logger.warning(
             "[governance] agent %r owns %d governed merging gateways; v1 wires only the "
             "first (%s). The remaining %d are dropped — split them across lanes/agents to "
@@ -80,16 +108,17 @@ _GOV_ENGINE_SRC = inspect.getsource(_gov_engine)
 _VOTING_POLICIES = frozenset(("VotingPolicy", "MajorityPolicy", "AbsoluteMajorityPolicy"))
 
 
-def _governance_star(agent, service_names: set, self_id: str):
-    """item 37 — for a governed *voting* merge owner, compute the candidate-vote STAR.
+def _governance_star_from(gov, service_names: set, self_id: str):
+    """item 37 — build a governed *voting* merge owner's candidate-vote STAR from an
+    EXPLICIT governance summary.
 
     Returns (peers, to_peers, gov) — `peers`/`to_peers` REPLACE the topology peer set so
     the owner addresses every producer and voter directly; `gov` is the governance summary
     augmented with the producer service list, vote weights, unresolved participants, owner
-    flags, the self service id, and the baked engine source. Returns None when the agent
-    has no governance, the policy is non-voting (Leader/Consensus/fallback keep the item-35
-    topology path), OR no producer resolves to a running service (a candidate-selection
-    vote needs at least one candidate — degrade to the item-35 single-round path).
+    flags, the self service id, and the baked engine source. Returns None when `gov` is
+    falsy, the policy is non-voting (Leader/Consensus/fallback keep the item-35 topology
+    path), OR no producer resolves to a running service (a candidate-selection vote needs
+    at least one candidate — degrade to the item-35 single-round path).
 
     PRODUCERS and VOTERS are decoupled (the design decision behind item 37):
       * producers = the BPMN branches flowing into the gateway (``gov['producers']``,
@@ -99,8 +128,11 @@ def _governance_star(agent, service_names: set, self_id: str):
     The owner produces a candidate only if it is itself a producer (``owner_produces``)
     and votes only if it is itself a participant (``owner_votes``). Either set may include
     the owner; both run in-process, never as a peer.
+
+    This is the per-summary core: ``_governance_star`` calls it with the agent's first/only
+    summary (legacy single-merge path); ``_governed_merge_states`` calls it once per bound
+    merge state (35b-5 faithful per-state governance). The frozen tally engine is untouched.
     """
-    gov = _governance_for(agent)
     if not gov:
         return None
     gov = dict(gov)  # copy — never mutate the shared summary on agent._governance
@@ -173,6 +205,130 @@ def _governance_star(agent, service_names: set, self_id: str):
     return peers, [p['service'] for p in peers], gov
 
 
+def _governance_star(agent, service_names: set, self_id: str):
+    """item 37 — the per-agent star: build from the agent's first/only governance summary
+    (``_governance_for`` → ``blobs[0]``). Thin wrapper over ``_governance_star_from`` for
+    the legacy single-merge path; behavior is byte-for-byte what it was before 35b-5."""
+    return _governance_star_from(_governance_for(agent), service_names, self_id)
+
+
+def _governed_merge_states(agent, service_names: set, self_id: str) -> list:
+    """35b-5 / B2 — state-aware governance grouping (DORMANT until the WME W3 binding lands).
+
+    For each merge state bound on ``agent._governance_by_state`` (keyed by the W3
+    ``"Address merge decision"`` state name; populated by ``_attach_governance_to_agents``
+    only when the gateway carries the ``flow=`` binding), compute that state's OWN
+    candidate-vote star by REUSING ``_governance_star_from`` — one star per merge state
+    instead of one per agent. The frozen tally engine is untouched; each state is just a
+    new caller.
+
+    Returns ``[]`` when no per-state binding exists, so legacy/non-W3 agents carry no
+    ``states`` richness and the live render (which never reads ``states``) stays
+    byte-identical. Each entry: ``{name, peers, guards, governance, is_merge}`` where
+    ``guards`` are the authored inbound transitions targeting the merge state (the flags),
+    surfaced from ``agent._a2a`` for the future faithful render to route on.
+    """
+    by_state = getattr(agent, '_governance_by_state', None) or {}
+    if not by_state:
+        return []
+    tags = getattr(agent, '_a2a', None) or {}
+    inbound = tags.get('inbound', []) if isinstance(tags, dict) else []
+    states = []
+    for state_name, gov in by_state.items():
+        star = _governance_star_from(gov, service_names, self_id)
+        peers = star[0] if star is not None else []
+        star_gov = star[2] if star is not None else None
+        # The non-voting per-state summary still drives a single-round merge at the state,
+        # so surface the raw gov (sans engine bake) when the star degrades/declines.
+        gov_payload = star_gov if star_gov is not None else dict(gov)
+        guards = [
+            {'intent': e.get('intent', ''), 'peer': e.get('peer', ''),
+             'source_state': e.get('source_state', '')}
+            for e in inbound if e.get('target_state') == state_name
+        ]
+        is_voting = bool(star_gov and star_gov.get('is_voting'))
+        # Flat, JSON-safe per-merge config the worker dispatches on at runtime. Emitted into
+        # the agent as a Python literal (repr) so bools/None are Python, not JSON, and the
+        # frozen tally engine is the only shared piece. Voting-only fields come from the star.
+        merge_config = {
+            'state': state_name,
+            'policy_type': gov_payload.get('policy_type'),
+            'ratio': gov_payload.get('ratio'),
+            'is_voting': is_voting,
+            'requires_human': bool(gov_payload.get('requires_human')),
+            'instruction': gov_payload.get('instruction') or '',
+            'summary': gov_payload.get('summary') or '',
+            'weights': (star_gov.get('weights') if star_gov else {}) or {},
+            'producers': (star_gov.get('producer_services') if star_gov else []) or [],
+            'owner_produces': bool(star_gov and star_gov.get('owner_produces')),
+            'owner_votes': bool(star_gov and star_gov.get('owner_votes')),
+            'unresolved': (star_gov.get('unresolved') if star_gov else []) or [],
+            'self': (star_gov.get('self_service') if star_gov else self_id),
+        }
+        states.append({
+            'name': state_name,
+            # The owner dispatches an incoming PUSH message to this block when the producer's
+            # `target_gateway` equals merge_key (the binding gateway id stamped at attach).
+            'merge_key': gov.get('gateway_id'),
+            'guard_intent': guards[0]['intent'] if guards else '',
+            'peers': peers,
+            'guards': guards,
+            'governance': gov_payload,
+            'is_voting': is_voting,
+            'is_merge': True,
+            'merge_config': merge_config,
+            'merge_config_py': repr(merge_config),
+        })
+    return states
+
+
+def _merge_sends_for(agent, service_names: set, self_id: str) -> list:
+    """35b-5 entry un-flatten — the ORDERED, NON-deduped list of this agent's outbound edges
+    that feed a governed gateway (``target_gateway`` stamped at attach). Each is one stage of
+    the faithful pipeline: the producer threads the task through them in turn, tagging each
+    PUSH with its gateway so the owner runs that merge and returns the merged result, which
+    feeds the next stage. Deduping by service (as ``peers`` does) would collapse two merges
+    to the same owner into one — exactly what this list avoids. Empty for legacy agents
+    (no ``target_gateway`` on any edge) → the pipeline render stays dormant + byte-identical.
+    """
+    tags = getattr(agent, '_a2a', None) or {}
+    sends = []
+    for edge in (tags.get('outbound', []) if isinstance(tags, dict) else []):
+        gw = edge.get('target_gateway')
+        if not gw:
+            continue
+        svc = _resolve_peer_service(edge, service_names)
+        if svc and svc != self_id:
+            sends.append({'service': svc, 'target_gateway': gw, 'kind': edge.get('kind'),
+                          'order': edge.get('order', 9999), 'state': edge.get('state', '')})
+    sends.sort(key=lambda s: s['order'])
+    return sends
+
+
+def _union_merge_state_peers(descriptor: dict) -> None:
+    """35b-5 / B2 — DNS reachability: the agent must resolve every per-state peer even
+    though ``_fanout(only=…)`` slices the fan-out per merge state at runtime. Union the
+    per-state peer sets (from ``descriptor['states']``) onto the descriptor peer list,
+    deduped and order-preserving. No-op when there are no bound merge states (legacy/non-W3
+    agents), so the live render stays byte-identical."""
+    states = descriptor.get('states') or []
+    if not states:
+        return
+    peers = descriptor.setdefault('peers', [])
+    seen = {p['service'] for p in peers}
+    order = len(peers)
+    for st in states:
+        for p in st.get('peers', []):
+            if p['service'] in seen:
+                continue
+            seen.add(p['service'])
+            merged = dict(p)
+            merged['order'] = order
+            order += 1
+            peers.append(merged)
+    descriptor['to_peers'] = [p['service'] for p in peers]
+
+
 def _a2a_descriptor(agent, service_names: set, self_service: str = None) -> dict:
     """Classify a baked agent for A2A wiring from its boundary states (plan §3/§4).
 
@@ -180,8 +336,11 @@ def _a2a_descriptor(agent, service_names: set, self_service: str = None) -> dict
       is matched against the swarm's service names. Peers NOT in `service_names`
       (e.g. a non-agentic `from_<Human>` handoff) are ignored — that's how the
       entry stays the entry despite an inbound boundary (R3, DAG-exact).
-    - role = 'worker' iff it has at least one inbound peer that IS a service;
-      else 'entry' (human-facing).
+    - human_facing / a2a_server flags (see ``_facing_flags``): ``a2a_server`` iff it has
+      ≥1 inbound peer that IS a service; ``human_facing`` is authoritative from
+      ``agent._human_facing`` (the BPMN start-event derivation) and falls back to the legacy
+      "no inbound peer ⇒ entry" heuristic when the flag is absent. ``role`` is derived for
+      back-compat. An agent can be BOTH (a human-facing merge owner).
     - prompt = the first LLMReply prompt found on a non-boundary state, else a default.
     """
     # item 22 — this agent's own service id, so a self-referential `from_<self>`
@@ -209,11 +368,13 @@ def _a2a_descriptor(agent, service_names: set, self_service: str = None) -> dict
             actions = getattr(body, 'actions', None) if body else None
             if actions and actions[0].__class__.__name__ == 'LLMReply':
                 prompt = getattr(actions[0], 'prompt', None) or prompt
-    role = 'worker' if from_peers else 'entry'
+    human_facing, a2a_server, role = _facing_flags(agent, bool(from_peers))
     name = getattr(agent, 'name', 'Agent')
     sorted_peers = sorted(set(to_peers))
     descriptor = {
         'role': role,
+        'human_facing': human_facing,
+        'a2a_server': a2a_server,
         'agent_id': _safe_service_name(name),
         'to_peers': sorted_peers,
         # item 10 — `peers` shim so the kind-aware template is single-path. The legacy
@@ -231,6 +392,23 @@ def _a2a_descriptor(agent, service_names: set, self_service: str = None) -> dict
     star = _governance_star(agent, service_names, self_id)
     if star is not None:
         descriptor['peers'], descriptor['to_peers'], descriptor['governance'] = star
+    # 35b-5 / B2 — state-aware governance (dormant until WME W3 binding). [] for legacy
+    # agents → no-op union → byte-identical render.
+    descriptor['states'] = _governed_merge_states(agent, service_names, self_id)
+    _union_merge_state_peers(descriptor)
+    # 35b-5 — the ordered pipeline of governed-merge sends (un-deduped). Drives the faithful
+    # entry/initiator un-flatten: thread the task through each merge in turn. [] for legacy.
+    descriptor['merge_sends'] = _merge_sends_for(agent, service_names, self_id)
+    # 35b-5 — bake the frozen tally engine once for any agent that OWNS a governed merge
+    # (each merge in _MERGES shares it) OR INITIATES a pipeline (finalizes a human-approved
+    # stage at the entry, O1). Absent for legacy agents → no bake → byte-identical.
+    if descriptor['states'] or descriptor['merge_sends']:
+        descriptor['engine_src'] = _GOV_ENGINE_SRC
+    # 35b-5 / B3 — does any outbound edge feed a governed gateway? A producer (even one
+    # without merge states of its own, e.g. the entry) must then tag its PUSH messages with
+    # the target gateway. False for legacy agents → _a2a_call renders byte-identically.
+    descriptor['has_merge_targets'] = bool(descriptor['merge_sends']) or any(
+        p.get('target_gateway') for p in descriptor.get('peers', []))
     return descriptor
 
 
@@ -266,13 +444,18 @@ def _a2a_descriptor_from_tags(agent, service_names: set, self_service: str = Non
             seen.add(svc)
             peers.append({'service': svc, 'kind': edge.get('kind'),
                           'order': edge.get('order', 9999),
-                          'state': edge.get('state', '')})
+                          'state': edge.get('state', ''),
+                          # 35b-5 / B3 — the governed gateway this outbound edge feeds (set
+                          # by _attach_governance_to_agents from the BPMN flow→gateway map);
+                          # the producer tags its PUSH message with it so the owner routes
+                          # to the right merge state. None for non-merge edges.
+                          'target_gateway': edge.get('target_gateway')})
 
     inbound_peers = {
         _resolve_peer_service(e, service_names)
         for e in tags.get('inbound', [])
     } - {None, self_id}
-    role = 'worker' if inbound_peers else 'entry'
+    human_facing, a2a_server, role = _facing_flags(agent, bool(inbound_peers))
 
     # Prompt: reuse the first LLMReply prompt on a non-boundary state, else a default
     # (identical heuristic to _a2a_descriptor for parity).
@@ -284,6 +467,8 @@ def _a2a_descriptor_from_tags(agent, service_names: set, self_service: str = Non
             prompt = getattr(actions[0], 'prompt', None) or prompt
     descriptor = {
         'role': role,
+        'human_facing': human_facing,
+        'a2a_server': a2a_server,
         'agent_id': _safe_service_name(name),
         'to_peers': [p['service'] for p in peers],     # back-compat (existing template/tests)
         'peers': peers,                                # NEW: per-kind, ordered
@@ -298,6 +483,23 @@ def _a2a_descriptor_from_tags(agent, service_names: set, self_service: str = Non
     star = _governance_star(agent, service_names, self_id)
     if star is not None:
         descriptor['peers'], descriptor['to_peers'], descriptor['governance'] = star
+    # 35b-5 / B2 — state-aware governance (dormant until WME W3 binding). [] for legacy
+    # agents → no-op union → byte-identical render.
+    descriptor['states'] = _governed_merge_states(agent, service_names, self_id)
+    _union_merge_state_peers(descriptor)
+    # 35b-5 — the ordered pipeline of governed-merge sends (un-deduped). Drives the faithful
+    # entry/initiator un-flatten: thread the task through each merge in turn. [] for legacy.
+    descriptor['merge_sends'] = _merge_sends_for(agent, service_names, self_id)
+    # 35b-5 — bake the frozen tally engine once for any agent that OWNS a governed merge
+    # (each merge in _MERGES shares it) OR INITIATES a pipeline (finalizes a human-approved
+    # stage at the entry, O1). Absent for legacy agents → no bake → byte-identical.
+    if descriptor['states'] or descriptor['merge_sends']:
+        descriptor['engine_src'] = _GOV_ENGINE_SRC
+    # 35b-5 / B3 — does any outbound edge feed a governed gateway? A producer (even one
+    # without merge states of its own, e.g. the entry) must then tag its PUSH messages with
+    # the target gateway. False for legacy agents → _a2a_call renders byte-identically.
+    descriptor['has_merge_targets'] = bool(descriptor['merge_sends']) or any(
+        p.get('target_gateway') for p in descriptor.get('peers', []))
     return descriptor
 
 
@@ -336,16 +538,20 @@ class DockerComposeGenerator(GeneratorInterface):
             trim_blocks=True,
             lstrip_blocks=True,
         )
-        entry_services = self._compute_entry_services()
-        services, networks = self._build_view(self.model, entry_services)
+        # entry/human-facing — the set whose service publishes host ports + runs the UI;
+        # a2a_servers — the set whose service runs the A2A server (≥1 inbound peer). The two
+        # are decoupled: a hybrid (a human-facing merge owner) is in BOTH.
+        human_facing_services, a2a_server_services = self._compute_service_flags()
+        services, networks = self._build_view(self.model, human_facing_services)
         template = env.get_template("docker-compose.yml.j2")
         with open(file_path, mode="w", encoding="utf-8") as f:
             f.write(template.render(services=services, networks=networks))
         print("Code generated in the location: " + file_path)
         # 6b-2 — bake a BAF build context per resolvable agentic LOCAL artifact.
-        self._bake_agent_contexts(env, entry_services)
+        self._bake_agent_contexts(env, human_facing_services, a2a_server_services)
 
-    def _bake_agent_contexts(self, env: Environment, entry_services: set = None) -> None:
+    def _bake_agent_contexts(self, env: Environment, entry_services: set = None,
+                             a2a_server_services: set = None) -> None:
         """For each LOCAL Artifact carrying a resolvable ``agent_model_ref``,
         bake a build context (``<output_dir>/<svc_name>/``) containing the BAF
         ``agent.py`` + ``config.yaml`` (via BAFGenerator) and a ``Dockerfile``.
@@ -415,18 +621,20 @@ class DockerComposeGenerator(GeneratorInterface):
                 descriptor = _a2a_descriptor_from_tags(agent, service_names, self_service=svc_name)
             else:
                 descriptor = _a2a_descriptor(agent, service_names, self_service=svc_name)
-            # An entry agent runs a websocket/UI platform, not an A2A server, so it has
-            # nothing listening for /a2a — any peer edge pointing at an entry is a call
-            # that always "Connection refused"s. Drop entry services from every agent's
-            # peers (e.g. a worker's merge-gateway back-edge to the supervision/entry
-            # lane); the worker's result already returns via the entry's own fan-out.
-            entries = entry_services or set()
-            if entries:
+            # A service that runs NO A2A server has nothing listening for /a2a — any peer
+            # edge pointing at it always "Connection refused"s. Drop those services from
+            # every agent's peers. A PURE entry (human-facing, no inbound peers) is such a
+            # service; but a HYBRID (human-facing AND a2a_server — e.g. a merge owner that
+            # also owns the BPMN start event) DOES listen, so it must NOT be dropped. Hence
+            # the drop is keyed on "no A2A server", not on "is human-facing": in a legacy
+            # render (no hybrids) the two sets coincide, so this stays byte-identical.
+            no_server = service_names - (a2a_server_services or set())
+            if no_server:
                 descriptor['peers'] = [p for p in descriptor.get('peers', [])
-                                       if p.get('service') not in entries]
+                                       if p.get('service') not in no_server]
                 descriptor['to_peers'] = [s for s in descriptor.get('to_peers', [])
-                                          if s not in entries]
-            has_boundaries = bool(descriptor['to_peers']) or descriptor['role'] == 'worker'
+                                          if s not in no_server]
+            has_boundaries = bool(descriptor['to_peers']) or descriptor['a2a_server']
             if has_boundaries:
                 with open(os.path.join(ctx_dir, f"{agent.name}.py"),
                           mode="w", encoding="utf-8") as f:
@@ -441,14 +649,26 @@ class DockerComposeGenerator(GeneratorInterface):
                 f.write(dockerfile_tpl.render(agent_script=agent_script))
             print(f"[docker_compose] baked build context: {ctx_dir}")
 
-    def _compute_entry_services(self) -> set:
-        """Return the set of service names whose agent has role='entry'.
+    def _compute_service_flags(self) -> tuple:
+        """Return ``(human_facing_services, a2a_server_services)`` — the two decoupled
+        capability sets, keyed by service name.
+
+        - ``human_facing_services`` — agents that run the websocket/Streamlit UI and get
+          the published host ports. Authoritative via ``agent._human_facing`` (the BPMN
+          start-event derivation); falls back to the legacy no-inbound-peer heuristic.
+        - ``a2a_server_services`` — agents that run the headless A2A server (≥1 inbound
+          peer). Used to decide which peer edges are reachable (the bake-loop drop).
 
         Mirrors the LOCAL+resolvable filter in _bake_agent_contexts(). When
-        agent_models_by_id is empty (single-diagram path) returns an empty set.
+        agent_models_by_id is empty (single-diagram path) returns two empty sets.
+
+        Emits a generation-time warning when there ARE resolvable agentic services but NONE
+        is human-facing — a closed worker-only swarm has no user-facing trigger: nothing
+        publishes a port and nothing initiates (check the BPMN has a start event in an
+        agentic lane).
         """
         if not self.agent_models_by_id:
-            return set()
+            return set(), set()
         service_names = {
             _safe_service_name(a.name)
             for a in self.model.all_artifacts()
@@ -456,7 +676,9 @@ class DockerComposeGenerator(GeneratorInterface):
             and getattr(a, 'agent_model_ref', None)
             and self.agent_models_by_id.get(a.agent_model_ref) is not None
         }
-        result: set = set()
+        human_facing: set = set()
+        a2a_servers: set = set()
+        any_service = False
         for art in self.model.all_artifacts():
             if art.locality != Locality.LOCAL:
                 continue
@@ -467,15 +689,27 @@ class DockerComposeGenerator(GeneratorInterface):
             if agent is None:
                 continue
             svc = _safe_service_name(art.name)
+            any_service = True
             # item 10 — same tag ▸ convention precedence as the bake loop, so the
-            # entry/worker split (and the published ports) agree with what's baked.
+            # split (and the published ports) agree with what's baked.
             if getattr(agent, '_a2a', None):
                 descriptor = _a2a_descriptor_from_tags(agent, service_names, self_service=svc)
             else:
                 descriptor = _a2a_descriptor(agent, service_names, self_service=svc)
-            if descriptor['role'] == 'entry':
-                result.add(svc)
-        return result
+            if descriptor['human_facing']:
+                human_facing.add(svc)
+            if descriptor['a2a_server']:
+                a2a_servers.add(svc)
+        if any_service and not human_facing:
+            logger.warning(
+                "[a2a] no entry/human-facing agent derived — the swarm has no user-facing "
+                "trigger; check the BPMN has a start event in an agentic lane")
+        return human_facing, a2a_servers
+
+    def _compute_entry_services(self) -> set:
+        """The set of human-facing service names (they publish the host ports). Thin
+        back-compat wrapper over ``_compute_service_flags``."""
+        return self._compute_service_flags()[0]
 
     def _build_view(self, model: DeploymentModel,
                     entry_services: set = None) -> tuple:

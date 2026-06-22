@@ -35,6 +35,43 @@ def test_real_inbound_peer_makes_worker():
     assert d['to_peers'] == ['reviewer']
 
 
+# ---------------------------------------------------------------------------
+# human_facing / a2a_server flags — decoupled from the legacy single `role`.
+# ---------------------------------------------------------------------------
+
+def test_pure_entry_flags():
+    sup = _A('Supervisor', ['coordinate_work', 'to_coder'])
+    d = _a2a_descriptor(sup, {'supervisor', 'coder'}, self_service='supervisor')
+    assert d['human_facing'] is True and d['a2a_server'] is False
+    assert d['role'] == 'entry'                           # legacy key still derived
+
+
+def test_pure_worker_flags():
+    coder = _A('Coder', ['write_code', 'from_supervisor'])
+    d = _a2a_descriptor(coder, {'supervisor', 'coder'}, self_service='coder')
+    assert d['human_facing'] is False and d['a2a_server'] is True
+    assert d['role'] == 'worker'
+
+
+def test_human_facing_flag_is_authoritative_over_inbound():
+    # An agent WITH inbound peers (a2a_server) that the backend marked human-facing is a
+    # HYBRID: both flags true. The legacy heuristic alone would have demoted it to a worker.
+    rev = _A('Reviewer', ['review', 'from_worker'])
+    rev._human_facing = True
+    d = _a2a_descriptor(rev, {'reviewer', 'worker'}, self_service='reviewer')
+    assert d['human_facing'] is True and d['a2a_server'] is True
+    assert d['role'] == 'entry'                           # derived from human_facing
+
+
+def test_human_facing_flags_via_tags_path():
+    rev = _tagged('Reviewer',
+                  outbound=[{"peer": "Worker", "ref": "w", "order": 1, "kind": "supervises", "state": "s"}],
+                  inbound=[{"peer": "Worker", "ref": "w", "order": 9999, "kind": "revises"}])
+    rev._human_facing = True
+    d = _a2a_descriptor_from_tags(rev, {'reviewer', 'worker'}, self_service='reviewer')
+    assert d['human_facing'] is True and d['a2a_server'] is True
+
+
 def test_non_service_from_human_is_ignored():
     # `from_Human` resolves to no service → entry stays entry (pre-existing behavior).
     sup = _A('Supervisor', ['coordinate_work', 'from_human', 'to_coder'])
@@ -259,3 +296,162 @@ def test_governed_voting_star_via_tags_path():
     assert sorted(d["to_peers"]) == ["coder", "reviewer"]
     assert d["governance"]["is_voting"] is True
     assert d["governance"]["weights"]["reviewer"] == 0.6
+
+
+# ---------------------------------------------------------------------------
+# 35b-5 / B2 — state-aware descriptor. When WME's W3 binding keys governance per merge
+# STATE (agent._governance_by_state), the descriptor grows a `states[]` list, one star
+# per merge state (reusing _governance_star). DORMANT: the live template never reads
+# `states`, so a legacy agent (no per-state binding) carries `states == []` and renders
+# byte-for-byte as today.
+# ---------------------------------------------------------------------------
+
+def test_states_empty_without_per_state_binding():
+    # A governed single-merge agent with NO _governance_by_state → no `states` richness.
+    sup = _A('Supervisor', ['coordinate_work', 'to_coder'])
+    sup._governance = [_voting_gov([_p("Coder", 0.8)], producers=["Coder"])]
+    d = _a2a_descriptor(sup, {"supervisor", "coder"}, self_service="supervisor")
+    assert d["states"] == []
+    # the per-agent star path is untouched (back-compat fallback still drives the render)
+    assert d["governance"]["is_voting"] is True
+
+
+def test_no_governance_has_empty_states():
+    sup = _A('Supervisor', ['coordinate_work', 'to_coder'])
+    d = _a2a_descriptor(sup, {"supervisor", "coder"}, self_service="supervisor")
+    assert d["states"] == []
+
+
+def test_single_merge_state_star_matches_per_agent_star():
+    # A 1-merge W3-bound agent: its per-STATE star must equal today's per-AGENT star
+    # (same summary, same engine) — the 1-merge parity guarantee from the test plan.
+    gov = _voting_gov([_p("Supervisor", 0.9), _p("Reviewer", 0.6)], producers=["Coder"])
+    sup = _A('Supervisor', [])
+    sup._governance = [gov]
+    sup._governance_by_state = {"Address merge decision": gov}
+    services = {"supervisor", "coder", "reviewer"}
+    d = _a2a_descriptor(sup, services, self_service="supervisor")
+    assert [s["name"] for s in d["states"]] == ["Address merge decision"]
+    st = d["states"][0]
+    assert st["is_merge"] is True
+    state_gov = st["governance"]
+    # identical to the per-agent star the legacy path computes
+    assert state_gov["producer_services"] == d["governance"]["producer_services"] == ["coder"]
+    assert state_gov["weights"] == d["governance"]["weights"]
+    assert state_gov["owner_votes"] == d["governance"]["owner_votes"] is True
+    assert [p["service"] for p in st["peers"]] == ["coder", "reviewer"]
+
+
+def test_multi_merge_states_union_peers_for_dns():
+    # Two merge states reached under different guards: the per-agent star (blobs[0]) only
+    # reaches merge A's producer, but the descriptor peer set must UNION both states so
+    # every per-state peer is DNS-reachable (runtime _fanout(only=…) slices per state).
+    gov_a = _voting_gov([_p("Supervisor", 0.9)], producers=["Coder"])
+    gov_b = _voting_gov([_p("Supervisor", 0.9)], producers=["Tester"])
+    sup = _A('Supervisor', [])
+    sup._governance = [gov_a]                                   # legacy star → coder only
+    sup._governance_by_state = {"merge A": gov_a, "merge B": gov_b}
+    d = _a2a_descriptor(sup, {"supervisor", "coder", "tester"}, self_service="supervisor")
+    assert {s["name"] for s in d["states"]} == {"merge A", "merge B"}
+    assert set(d["to_peers"]) == {"coder", "tester"}           # union, not just blobs[0]
+
+
+def test_states_via_tags_path_carries_guards():
+    # The tags builder emits states too; guards come from the inbound a2a edges that
+    # target the merge state (the flags the faithful render will route on).
+    gov = _voting_gov([_p("Coder", 0.8)], producers=["Coder"])
+    sup = _tagged('Supervisor', outbound=[
+        {"peer": "Coder", "ref": "u", "order": 1, "kind": "delegates", "state": "s"}])
+    sup._a2a["inbound"] = [
+        {"peer": "Coder", "flow": "gw1", "intent": "ready",
+         "target_state": "Address merge decision", "source_state": "review"}]
+    sup._governance_by_state = {"Address merge decision": gov}
+    d = _a2a_descriptor_from_tags(sup, {"supervisor", "coder"}, self_service="supervisor")
+    st = next(s for s in d["states"] if s["name"] == "Address merge decision")
+    assert st["guards"] == [{"intent": "ready", "peer": "Coder", "source_state": "review"}]
+
+
+# ---------------------------------------------------------------------------
+# 35b-5 / B3 — routing keys: each merge state carries its dispatch key (merge_key =
+# gateway id) + a Python-literal merge_config; the descriptor bakes the engine once and
+# flags producer agents (has_merge_targets); the producer's peer carries target_gateway.
+# ---------------------------------------------------------------------------
+
+def _w3_gov(gateway_id, participants, producers, policy_type="MajorityPolicy"):
+    return {"policy_type": policy_type, "ratio": 0.5, "requires_human": False,
+            "participants": participants, "producers": producers,
+            "gateway_id": gateway_id, "instruction": "i", "summary": "s", "raw": "r"}
+
+
+def test_state_carries_merge_key_and_config_literal():
+    gov = _w3_gov("gw1", [_p("Supervisor", 0.9), _p("Coder", 0.8)], ["Coder"])
+    sup = _A("Supervisor", [])
+    sup._governance = [gov]
+    sup._governance_by_state = {"Address merge decision": gov}
+    d = _a2a_descriptor(sup, {"supervisor", "coder"}, self_service="supervisor")
+    st = d["states"][0]
+    assert st["merge_key"] == "gw1"
+    # merge_config_py is a Python literal (bools/None are Python, not JSON)
+    cfg = eval(st["merge_config_py"], {})              # noqa: S307 — trusted generator output
+    assert cfg["policy_type"] == "MajorityPolicy"
+    assert cfg["is_voting"] is True
+    assert cfg["producers"] == ["coder"] and cfg["self"] == "supervisor"
+    assert cfg["owner_votes"] is True
+    # the engine is baked once on the descriptor for the faithful worker
+    assert d["engine_src"] and "def tally" in d["engine_src"]
+
+
+def test_non_voting_merge_config_is_minimal():
+    gov = _w3_gov("gw2", [_p("Supervisor", 0.9)], ["Coder"], policy_type="LeaderDrivenPolicy")
+    sup = _A("Supervisor", [])
+    sup._governance = [gov]
+    sup._governance_by_state = {"merge": gov}
+    d = _a2a_descriptor(sup, {"supervisor", "coder"}, self_service="supervisor")
+    cfg = eval(d["states"][0]["merge_config_py"], {})  # noqa: S307
+    assert cfg["is_voting"] is False
+    assert cfg["weights"] == {} and cfg["producers"] == []
+
+
+def test_producer_peer_carries_target_gateway_and_flag():
+    sup = _tagged("Producer", outbound=[
+        {"peer": "Owner", "ref": "u", "order": 1, "kind": "revises", "state": "draft",
+         "target_gateway": "gw1"}])
+    d = _a2a_descriptor_from_tags(sup, {"producer", "owner"}, self_service="producer")
+    assert d["peers"][0]["target_gateway"] == "gw1"
+    assert d["has_merge_targets"] is True
+
+
+def test_legacy_agent_has_no_merge_targets_and_no_engine():
+    sup = _A("Supervisor", ["coordinate", "to_coder"])
+    d = _a2a_descriptor(sup, {"supervisor", "coder"}, self_service="supervisor")
+    assert d["has_merge_targets"] is False
+    assert "engine_src" not in d                        # no states → no bake
+    assert d["states"] == []
+    assert d["merge_sends"] == []
+
+
+# ---------------------------------------------------------------------------
+# 35b-5 entry un-flatten — merge_sends is the ORDERED, NON-deduped pipeline of governed
+# merges a producer feeds. Two edges to the SAME owner (two gateways) must stay TWO sends.
+# ---------------------------------------------------------------------------
+
+def test_merge_sends_keeps_two_merges_to_same_owner():
+    prod = _tagged("Producer", outbound=[
+        {"peer": "Owner", "ref": "u", "order": 2, "kind": "revises", "state": "review",
+         "target_gateway": "gw2"},
+        {"peer": "Owner", "ref": "u", "order": 1, "kind": "revises", "state": "draft",
+         "target_gateway": "gw1"}])
+    d = _a2a_descriptor_from_tags(prod, {"producer", "owner"}, self_service="producer")
+    # two stages, ORDERED by `order` (gw1 before gw2), NOT collapsed to one owner peer
+    assert [(s["service"], s["target_gateway"]) for s in d["merge_sends"]] == [
+        ("owner", "gw1"), ("owner", "gw2")]
+    assert d["has_merge_targets"] is True
+    # the broadcast peer set still dedups to one owner (only merge_sends keeps both)
+    assert d["to_peers"] == ["owner"]
+
+
+def test_non_merge_outbound_is_not_a_send():
+    prod = _tagged("Producer", outbound=[
+        {"peer": "Owner", "ref": "u", "order": 1, "kind": "delegates", "state": "s"}])
+    d = _a2a_descriptor_from_tags(prod, {"producer", "owner"}, self_service="producer")
+    assert d["merge_sends"] == []                        # no target_gateway → not a pipeline step

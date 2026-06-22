@@ -707,6 +707,43 @@ def test_governed_voting_bake_uses_low_temp_and_validates_owner_ballot(tmp_path)
 # but the drop is now VISIBLE (warning) rather than silent.
 # ---------------------------------------------------------------------------
 
+def test_legacy_single_gateway_render_is_byte_identical(tmp_path):
+    """35b-5 byte-identity gate — an agent WITHOUT the WME W3 per-state binding
+    (``_governance_by_state``) must render via EXACTLY today's synthesized path. This
+    golden locks the verified single-gateway governed render byte-for-byte, so the
+    dormant B1/B2 machinery (and the future B3 faithful render) cannot perturb it.
+
+    After an INTENTIONAL render change, regenerate the golden by re-running this test
+    once with ``BESSER_REGEN_GOLDEN=1`` set (it rewrites the fixture, then passes).
+    """
+    model = _two_agent_swarm_model()
+    supervisor = _agent_with_a2a("AgentSupervisor", outbound=[
+        {"peer": "AgentCoder", "ref": "coder", "order": 1, "kind": "delegates",
+         "state": "coordinate"}])
+    supervisor._governance = [_voting_gov_summary(
+        participants=[_p("AgentSupervisor", 0.9), _p("AgentCoder", 0.8)],
+        producers=["AgentCoder"])]
+    coder = _agent_with_a2a("AgentCoder", inbound=[
+        {"peer": "AgentSupervisor", "ref": "sup", "order": 9999, "kind": "delegates"}])
+    # No W3 binding on either agent → _governance_by_state never set → states == [].
+    assert not hasattr(supervisor, "_governance_by_state")
+
+    gen = DockerComposeGenerator(
+        model, output_dir=str(tmp_path),
+        agent_models_by_id={"sup": supervisor, "coder": coder})
+    gen.generate()
+
+    rendered = (tmp_path / "agent_supervisor" / "AgentSupervisor.py").read_text(
+        encoding="utf-8")            # text mode → universal-newline normalized
+    golden_path = os.path.join(os.path.dirname(__file__), "golden",
+                               "legacy_single_gateway_supervisor.py")
+    if os.environ.get("BESSER_REGEN_GOLDEN"):
+        with open(golden_path, "w", encoding="utf-8", newline="") as f:
+            f.write(rendered)
+    golden = open(golden_path, encoding="utf-8").read()
+    assert rendered == golden, "legacy single-gateway render drifted from the golden"
+
+
 def test_multiple_governed_gateways_warns_and_wires_first(tmp_path, caplog):
     import logging
     model = _two_agent_swarm_model()
@@ -727,3 +764,276 @@ def test_multiple_governed_gateways_warns_and_wires_first(tmp_path, caplog):
     with caplog.at_level(logging.WARNING):
         gen.generate()
     assert any("owns 2 governed merging gateways" in r.message for r in caplog.records)
+
+
+# ---------------------------------------------------------------------------
+# 35b-5 / B3+B4 — faithful per-merge governed dispatch. A W3-bound owner that owns
+# >1 governed merge renders a _MERGES registry (one config per gateway) and a handle()
+# that dispatches a PUSH-tagged message (flow == gateway id) to that merge's vote. The
+# producer tags its outbound message with the target gateway. No "wires only first" warning.
+# ---------------------------------------------------------------------------
+
+def _w3_merge_summary(gateway_id, merge_state, policy_type, participants, producers):
+    return {"policy_type": policy_type, "ratio": 0.5, "requires_human": False,
+            "participants": participants, "producers": producers,
+            "gateway_id": gateway_id, "merge_state": merge_state,
+            "instruction": "merge instruction", "summary": "policy facts", "raw": "raw"}
+
+
+def _two_merge_owner_and_producer():
+    """An Owner (worker) bound to two governed gateways (one voting, one non-voting) and a
+    Producer whose outbound edges feed those gateways (target_gateway stamped)."""
+    node = Node("Cluster", kind=NodeKind.EXECUTION_ENVIRONMENT)
+    owner = Artifact("Owner", locality=Locality.LOCAL)
+    owner.agent_model_ref = "own"
+    prod = Artifact("Producer", locality=Locality.LOCAL)
+    prod.agent_model_ref = "prod"
+    model = DeploymentModel("m", nodes={node}, artifacts={owner, prod},
+                            relationships={DeploymentRelation(owner, node),
+                                           DeploymentRelation(prod, node)})
+    voting = _w3_merge_summary("gw1", "Address_merge_decision__a", "MajorityPolicy",
+                               [_p("Owner", 0.9), _p("Producer", 0.8)], ["Producer"])
+    nonvoting = _w3_merge_summary("gw2", "Address_merge_decision__b", "LeaderDrivenPolicy",
+                                  [_p("Owner", 0.9)], ["Producer"])
+    owner_agent = _agent_with_a2a("Owner", inbound=[
+        {"peer": "Producer", "ref": "prod", "order": 9999, "kind": "revises",
+         "flow": "gw1", "target_state": "Address_merge_decision__a", "intent": "recv_a"},
+        {"peer": "Producer", "ref": "prod", "order": 9999, "kind": "revises",
+         "flow": "gw2", "target_state": "Address_merge_decision__b", "intent": "recv_b"}])
+    owner_agent._governance = [voting, nonvoting]
+    owner_agent._governance_by_state = {
+        "Address_merge_decision__a": voting, "Address_merge_decision__b": nonvoting}
+    producer_agent = _agent_with_a2a("Producer", outbound=[
+        {"peer": "Owner", "ref": "own", "order": 1, "kind": "revises", "state": "draft",
+         "flow": "f1", "target_gateway": "gw1"},
+        {"peer": "Owner", "ref": "own", "order": 2, "kind": "revises", "state": "review",
+         "flow": "f2", "target_gateway": "gw2"}])
+    return model, {"own": owner_agent, "prod": producer_agent}
+
+
+def test_faithful_owner_renders_per_merge_dispatch(tmp_path, caplog):
+    import ast
+    import logging
+    model, agents = _two_merge_owner_and_producer()
+    gen = DockerComposeGenerator(model, output_dir=str(tmp_path), agent_models_by_id=agents)
+    with caplog.at_level(logging.WARNING):
+        gen.generate()
+    # the faithful path governs BOTH merges → no "wires only the first" warning
+    assert not any("wires only the" in r.message for r in caplog.records)
+
+    owner_py = (tmp_path / "owner" / "Owner.py").read_text(encoding="utf-8")
+    ast.parse(owner_py)                                    # emitted code compiles
+    assert "_MERGES = {" in owner_py
+    assert '"gw1":' in owner_py and '"gw2":' in owner_py   # one config per gateway
+    assert "async def _run_merge(cfg, task, params):" in owner_py
+    assert '_cfg = _MERGES.get(params.get("flow"))' in owner_py   # PUSH dispatch
+    assert "def tally" in owner_py and "def parse_ballot" in owner_py  # engine baked once
+    # exactly one baked engine despite two merges
+    assert owner_py.count("def tally") == 1
+
+
+def test_faithful_merge_configs_are_voting_and_nonvoting(tmp_path):
+    model, agents = _two_merge_owner_and_producer()
+    gen = DockerComposeGenerator(model, output_dir=str(tmp_path), agent_models_by_id=agents)
+    gen.generate()
+    owner_py = (tmp_path / "owner" / "Owner.py").read_text(encoding="utf-8")
+    # extract the _MERGES literal and eval it
+    start = owner_py.index("_MERGES = {")
+    buf = []
+    for ln in owner_py[start:].splitlines():
+        buf.append(ln)
+        if ln == "}":
+            break
+    ns = {}
+    exec("\n".join(buf), ns)
+    merges = ns["_MERGES"]
+    assert set(merges) == {"gw1", "gw2"}
+    assert merges["gw1"]["is_voting"] is True
+    assert merges["gw1"]["policy_type"] == "MajorityPolicy"
+    assert merges["gw1"]["producers"] == ["producer"]
+    assert merges["gw1"]["owner_votes"] is True and merges["gw1"]["self"] == "owner"
+    assert merges["gw2"]["is_voting"] is False           # LeaderDriven → single-round merge
+    assert merges["gw2"]["weights"] == {}                # non-voting carries no vote fields
+
+
+def test_faithful_producer_tags_flow_on_push(tmp_path):
+    import ast
+    model, agents = _two_merge_owner_and_producer()
+    gen = DockerComposeGenerator(model, output_dir=str(tmp_path), agent_models_by_id=agents)
+    gen.generate()
+    prod_py = (tmp_path / "producer" / "Producer.py").read_text(encoding="utf-8")
+    ast.parse(prod_py)
+    # the producer tags its PUSH message with the target gateway id (flow=)
+    assert "def _a2a_call(base_url, agent_id, message, flow=None):" in prod_py
+    assert '_params["flow"] = flow' in prod_py
+    assert '"gw1"' in prod_py or '"gw2"' in prod_py       # at least one target gateway literal
+
+
+def test_unflatten_producer_threads_both_merges_sequentially(tmp_path):
+    """35b-5 entry un-flatten — the producer (an entry: no inbound) feeds TWO governed merges
+    on the SAME owner. The flattened single fan-out would collapse them; the faithful pipeline
+    threads the task through BOTH in order, each PUSH-tagged with its own gateway."""
+    import ast
+    model, agents = _two_merge_owner_and_producer()
+    gen = DockerComposeGenerator(model, output_dir=str(tmp_path), agent_models_by_id=agents)
+    gen.generate()
+    prod_py = (tmp_path / "producer" / "Producer.py").read_text(encoding="utf-8")
+    ast.parse(prod_py)
+    assert "_MERGE_PIPELINE = [" in prod_py
+    assert "def _run_merge_pipeline(task):" in prod_py
+    # extract the pipeline literal and verify BOTH stages survive (un-deduped, ordered)
+    start = prod_py.index("_MERGE_PIPELINE = [")
+    buf = []
+    for ln in prod_py[start:].splitlines():
+        buf.append(ln)
+        if ln == "]":
+            break
+    ns = {}
+    exec("\n".join(buf), ns)
+    assert ns["_MERGE_PIPELINE"] == [("owner", "gw1"), ("owner", "gw2")]
+    # the entry work_body drives the pipeline (Producer has no inbound → entry/work_body):
+    # O1 inlines the stage loop so it can pause/resume for human approval mid-pipeline.
+    assert "_result, _stages = task, list(_MERGE_PIPELINE)" in prod_py
+    assert "_result, _pending = _merge_send(_result, _service, _flow)" in prod_py
+
+
+def test_unflatten_worker_initiator_threads_pipeline(tmp_path):
+    """A producer that is ALSO a worker (has inbound) initiates the pipeline from handle()."""
+    import ast
+    model, agents = _two_merge_owner_and_producer()
+    # make the Producer a worker by giving it an inbound peer (a real swarm back-edge)
+    agents["prod"]._a2a["inbound"] = [
+        {"peer": "Owner", "ref": "own", "order": 9999, "kind": "delegates"}]
+    gen = DockerComposeGenerator(model, output_dir=str(tmp_path), agent_models_by_id=agents)
+    gen.generate()
+    prod_py = (tmp_path / "producer" / "Producer.py").read_text(encoding="utf-8")
+    ast.parse(prod_py)
+    assert "a2a_platform = agent.use_a2a_platform()" in prod_py     # worker server
+    assert "return {\"reply\": _run_merge_pipeline(task)}" in prod_py  # handle() initiator path
+
+
+def test_o1_entry_renders_hitl_pause_resume(tmp_path):
+    """35b-5 / O1 — an entry that drives a governed-merge pipeline renders the stateful
+    HITL pause/resume: when a merge owner returns gov_pending (requires_human), the entry
+    stashes the remaining pipeline, presents the slate, and finalizes on the human's NEXT
+    message by adding their ballot and running the frozen tally. The machinery is static for
+    any merge_sends entry — it does not depend on a policy actually being requires_human."""
+    import ast
+    model, agents = _two_merge_owner_and_producer()
+    gen = DockerComposeGenerator(model, output_dir=str(tmp_path), agent_models_by_id=agents)
+    gen.generate()
+    prod_py = (tmp_path / "producer" / "Producer.py").read_text(encoding="utf-8")
+    ast.parse(prod_py)                                             # entry code compiles
+    # the pause path stashes the remaining pipeline + the owner's gov_pending payload
+    assert 'session.set("pipeline_pending", {"pending": _pending, "remaining": _stages})' in prod_py
+    # the resume path reads it back, drops it, and finalizes with the human ballot via the frozen engine
+    assert '_resume = session.get("pipeline_pending")' in prod_py
+    assert 'session.delete("pipeline_pending")' in prod_py
+    assert '"voter": "human"' in prod_py
+    assert "_decision = tally(" in prod_py                          # final tally over agent + human ballots
+    assert "def tally" in prod_py and "def parse_ballot" in prod_py  # frozen engine baked into the entry
+    # _merge_send returns (text, pending) so the loop can detect a paused owner
+    assert "def _merge_send(message, service, flow):" in prod_py
+    assert "_res.get(\"gov_pending\")" in prod_py
+
+
+# ---------------------------------------------------------------------------
+# Human-facing AND a2a_server (the HYBRID) — a coordinator/merge-owner lane that owns the
+# BPMN start event (backend stamps agent._human_facing) AND receives producer pushes. It
+# must run BOTH platforms and publish BOTH port sets, while keeping its _MERGES + handle()
+# dispatch. The legacy "entries run no A2A server" assumption misclassified this as a worker.
+# ---------------------------------------------------------------------------
+
+def _owner_block(compose: str, svc: str) -> str:
+    """The text of one service's block in docker-compose.yml (svc → next sibling)."""
+    lines = compose.splitlines()
+    out, capturing = [], False
+    for ln in lines:
+        if ln.startswith(f"  {svc}:"):
+            capturing = True
+            continue
+        if capturing and ln and not ln.startswith("   ") and not ln.startswith("    "):
+            break                                          # next service / top-level key
+        if capturing:
+            out.append(ln)
+    return "\n".join(out)
+
+
+def test_human_facing_merge_owner_is_hybrid(tmp_path):
+    """A merge OWNER (has inbound A2A peers → a2a_server) that the backend marks human-facing
+    (owns the BPMN start event) must render as a HYBRID: websocket UI + published ports AND a
+    headless A2A server with _MERGES + handle() dispatch for the producer's pushes."""
+    import ast
+    model, agents = _two_merge_owner_and_producer()
+    # The backend (_attach_entry_role_to_agents) stamps this from the BPMN start event; here
+    # we set it directly. WITHOUT it the owner has inbound peers → legacy heuristic = worker.
+    agents["own"]._human_facing = True
+
+    gen = DockerComposeGenerator(model, output_dir=str(tmp_path), agent_models_by_id=agents)
+    gen.generate()
+
+    # docker-compose: the owner publishes the human-facing host ports despite being a server.
+    compose = (tmp_path / "docker-compose.yml").read_text(encoding="utf-8")
+    owner_block = _owner_block(compose, "owner")
+    assert '"5001:5000"' in owner_block and '"8765:8765"' in owner_block
+
+    owner_py = (tmp_path / "owner" / "Owner.py").read_text(encoding="utf-8")
+    ast.parse(owner_py)                                    # the hybrid render compiles
+    # BOTH platforms run.
+    assert "a2a_platform = agent.use_a2a_platform()" in owner_py
+    assert "platform = agent.use_websocket_platform(use_ui=True)" in owner_py
+    # A2A server side: the merge registry + PUSH dispatch survive (producer pushes still land).
+    assert "_MERGES = {" in owner_py
+    assert '"gw1":' in owner_py and '"gw2":' in owner_py
+    assert 'async def handle(' in owner_py
+    assert '_cfg = _MERGES.get(params.get("flow"))' in owner_py
+    assert "def tally" in owner_py and "def parse_ballot" in owner_py
+    # UI side: the websocket flow provides the single initial state; the worker's idle stub is
+    # NOT emitted (it would be a second initial state), so exactly one initial state exists.
+    assert "agent.new_state('greetings', initial=True)" in owner_py
+    assert "agent.new_state('idle', initial=True)" not in owner_py
+    assert owner_py.count("initial=True") == 1
+    assert "def work_body(" in owner_py
+    # The hybrid owner's UI must NOT reference the legacy single-merge GOVERNANCE_* constants
+    # (gated out when states are present) — its voting runs in handle()/_run_merge instead.
+    assert "GOVERNANCE_POLICY_TYPE" not in owner_py
+
+
+def test_human_facing_owner_peer_not_dropped_from_producer(tmp_path):
+    """A producer's edge to a human-facing owner that ALSO runs an A2A server must NOT be
+    dropped (the owner is reachable). The legacy drop removed any peer pointing at an entry."""
+    import ast
+    model, agents = _two_merge_owner_and_producer()
+    agents["own"]._human_facing = True
+    gen = DockerComposeGenerator(model, output_dir=str(tmp_path), agent_models_by_id=agents)
+    gen.generate()
+    prod_py = (tmp_path / "producer" / "Producer.py").read_text(encoding="utf-8")
+    ast.parse(prod_py)
+    # the producer still threads its governed merges to the (now hybrid) owner
+    assert '("owner", "gw1")' in prod_py and '("owner", "gw2")' in prod_py
+
+
+def test_no_human_facing_agent_warns(tmp_path, caplog):
+    """A closed worker-only swarm (every agent has an inbound peer, none marked human-facing)
+    has no user-facing trigger → a generation-time warning fires."""
+    import logging
+    node = Node("Cluster", kind=NodeKind.EXECUTION_ENVIRONMENT)
+    a = Artifact("AgentA", locality=Locality.LOCAL)
+    a.agent_model_ref = "a"
+    b = Artifact("AgentB", locality=Locality.LOCAL)
+    b.agent_model_ref = "b"
+    model = DeploymentModel("m", nodes={node}, artifacts={a, b},
+                            relationships={DeploymentRelation(a, node),
+                                           DeploymentRelation(b, node)})
+    # mutual inbound edges → both are a2a_servers, neither is human-facing (no flag, has inbound)
+    agent_a = _agent_with_a2a("AgentA",
+                              outbound=[{"peer": "AgentB", "ref": "b", "order": 1, "kind": "delegates"}],
+                              inbound=[{"peer": "AgentB", "ref": "b", "order": 9999, "kind": "delegates"}])
+    agent_b = _agent_with_a2a("AgentB",
+                              outbound=[{"peer": "AgentA", "ref": "a", "order": 1, "kind": "delegates"}],
+                              inbound=[{"peer": "AgentA", "ref": "a", "order": 9999, "kind": "delegates"}])
+    gen = DockerComposeGenerator(model, output_dir=str(tmp_path),
+                                 agent_models_by_id={"a": agent_a, "b": agent_b})
+    with caplog.at_level(logging.WARNING):
+        gen.generate()
+    assert any("no entry/human-facing agent derived" in r.message for r in caplog.records)
