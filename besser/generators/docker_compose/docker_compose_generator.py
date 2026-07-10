@@ -329,6 +329,21 @@ def _union_merge_state_peers(descriptor: dict) -> None:
     descriptor['to_peers'] = [p['service'] for p in peers]
 
 
+def _prefer_ui_single_merge_governance(descriptor: dict, explicit_human_facing: bool) -> None:
+    """Prefer the UI/work_body governance path for the explicit human-facing voting owner."""
+    states = descriptor.get('states') or []
+    governance = descriptor.get('governance') or {}
+    if not explicit_human_facing:
+        return
+    if descriptor.get('merge_sends'):
+        return
+    if len(states) != 1:
+        return
+    if not governance.get('is_voting'):
+        return
+    descriptor['states'] = []
+
+
 def _a2a_descriptor(agent, service_names: set, self_service: str = None) -> dict:
     """Classify a baked agent for A2A wiring from its boundary states (plan §3/§4).
 
@@ -399,6 +414,7 @@ def _a2a_descriptor(agent, service_names: set, self_service: str = None) -> dict
     # 35b-5 — the ordered pipeline of governed-merge sends (un-deduped). Drives the faithful
     # entry/initiator un-flatten: thread the task through each merge in turn. [] for legacy.
     descriptor['merge_sends'] = _merge_sends_for(agent, service_names, self_id)
+    _prefer_ui_single_merge_governance(descriptor, getattr(agent, '_human_facing', None) is True)
     # 35b-5 — bake the frozen tally engine once for any agent that OWNS a governed merge
     # (each merge in _MERGES shares it) OR INITIATES a pipeline (finalizes a human-approved
     # stage at the entry, O1). Absent for legacy agents → no bake → byte-identical.
@@ -490,6 +506,7 @@ def _a2a_descriptor_from_tags(agent, service_names: set, self_service: str = Non
     # 35b-5 — the ordered pipeline of governed-merge sends (un-deduped). Drives the faithful
     # entry/initiator un-flatten: thread the task through each merge in turn. [] for legacy.
     descriptor['merge_sends'] = _merge_sends_for(agent, service_names, self_id)
+    _prefer_ui_single_merge_governance(descriptor, getattr(agent, '_human_facing', None) is True)
     # 35b-5 — bake the frozen tally engine once for any agent that OWNS a governed merge
     # (each merge in _MERGES shares it) OR INITIATES a pipeline (finalizes a human-approved
     # stage at the entry, O1). Absent for legacy agents → no bake → byte-identical.

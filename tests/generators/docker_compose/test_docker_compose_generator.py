@@ -702,6 +702,36 @@ def test_governed_voting_bake_uses_low_temp_and_validates_owner_ballot(tmp_path)
     assert "did NOT end with the" in sup_py             # the emphatic re-prompt text
 
 
+def test_human_facing_single_merge_owner_uses_ui_governance_path(tmp_path):
+    import ast
+
+    model, agents = _single_merge_human_owner_and_worker_producer()
+    agents["own"]._human_facing = True
+
+    gen = DockerComposeGenerator(model, output_dir=str(tmp_path), agent_models_by_id=agents)
+    gen.generate()
+
+    owner_py = (tmp_path / "owner" / "Owner.py").read_text(encoding="utf-8")
+    prod_py = (tmp_path / "producer" / "Producer.py")
+    prod_py = prod_py.read_text(encoding="utf-8")
+    ast.parse(owner_py)
+    ast.parse(prod_py)
+
+    assert "platform = agent.use_websocket_platform(use_ui=True)" in owner_py
+    assert "a2a_platform = agent.use_a2a_platform()" in owner_py
+    assert "GOVERNANCE_POLICY_TYPE" in owner_py
+    assert "def _run_fanout(task, only=None, leaf=False):" in owner_py
+    assert "_MERGES = {" not in owner_py
+    assert '_cfg = _MERGES.get(params.get("flow"))' not in owner_py
+    assert "_run_fanout(task, only=set(GOVERNANCE_PRODUCERS), leaf=True)" in owner_py
+    assert "_run_fanout(cand_block + BALLOT_INSTRUCTION, only=_voters, leaf=True)" in owner_py
+
+    assert "async def handle(" in prod_py
+    assert 'if _leaf:' in prod_py
+    assert 'return {"reply": reply}' in prod_py
+    assert 'return {"reply": _run_merge_pipeline(task)}' in prod_py
+
+
 # ---------------------------------------------------------------------------
 # Phase 4 — an agent owning >1 governed merging gateway wires only the first,
 # but the drop is now VISIBLE (warning) rather than silent.
@@ -811,6 +841,21 @@ def _two_merge_owner_and_producer():
     return model, {"own": owner_agent, "prod": producer_agent}
 
 
+def _single_merge_human_owner_and_worker_producer():
+    model, agents = _two_merge_owner_and_producer()
+    agents["own"]._a2a["inbound"] = agents["own"]._a2a["inbound"][:1]
+    agents["own"]._governance = agents["own"]._governance[:1]
+    only = agents["own"]._governance[0]
+    agents["own"]._governance_by_state = {"Address_merge_decision__a": only}
+    agents["prod"]._a2a["outbound"] = agents["prod"]._a2a["outbound"][:1]
+    # Match AgenticDEV: the producer is also called by the owner, so it is a worker and
+    # its handle() path must honor leaf=True.
+    agents["prod"]._a2a["inbound"] = [
+        {"peer": "Owner", "ref": "own", "order": 9999, "kind": "supervises"}
+    ]
+    return model, agents
+
+
 def test_faithful_owner_renders_per_merge_dispatch(tmp_path, caplog):
     import ast
     import logging
@@ -827,7 +872,9 @@ def test_faithful_owner_renders_per_merge_dispatch(tmp_path, caplog):
     assert '"gw1":' in owner_py and '"gw2":' in owner_py   # one config per gateway
     assert "async def _run_merge(cfg, task, params):" in owner_py
     assert '_cfg = _MERGES.get(params.get("flow"))' in owner_py   # PUSH dispatch
+    assert "def _run_fanout(task, only=None, leaf=False):" in owner_py
     assert "def tally" in owner_py and "def parse_ballot" in owner_py  # engine baked once
+    assert "_run_fanout(cand_block + BALLOT_INSTRUCTION, only=_voters, leaf=True)" in owner_py
     # exactly one baked engine despite two merges
     assert owner_py.count("def tally") == 1
 
@@ -864,7 +911,7 @@ def test_faithful_producer_tags_flow_on_push(tmp_path):
     prod_py = (tmp_path / "producer" / "Producer.py").read_text(encoding="utf-8")
     ast.parse(prod_py)
     # the producer tags its PUSH message with the target gateway id (flow=)
-    assert "def _a2a_call(base_url, agent_id, message, flow=None):" in prod_py
+    assert "def _a2a_call(base_url, agent_id, message, flow=None, leaf=False):" in prod_py
     assert '_params["flow"] = flow' in prod_py
     assert '"gw1"' in prod_py or '"gw2"' in prod_py       # at least one target gateway literal
 
@@ -909,6 +956,7 @@ def test_unflatten_worker_initiator_threads_pipeline(tmp_path):
     prod_py = (tmp_path / "producer" / "Producer.py").read_text(encoding="utf-8")
     ast.parse(prod_py)
     assert "a2a_platform = agent.use_a2a_platform()" in prod_py     # worker server
+    assert 'if _leaf:' in prod_py
     assert "return {\"reply\": _run_merge_pipeline(task)}" in prod_py  # handle() initiator path
 
 

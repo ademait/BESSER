@@ -72,6 +72,60 @@ def test_human_facing_flags_via_tags_path():
     assert d['human_facing'] is True and d['a2a_server'] is True
 
 
+def _w3_gov(gateway_id, participants, producers, policy_type="VotingPolicy"):
+    return {"policy_type": policy_type, "ratio": 0.5, "requires_human": False,
+            "participants": participants, "producers": producers,
+            "gateway_id": gateway_id, "merge_state": "Address_merge_decision",
+            "instruction": "...", "summary": "...", "raw": "..."}
+
+
+def test_human_facing_single_voting_merge_owner_prefers_ui_governance():
+    gov = _w3_gov(
+        "gw1",
+        [_p("Reviewer", 0.93), _p("Coder", 0.82)],
+        ["Coder"],
+        policy_type="MajorityPolicy",
+    )
+    rev = _tagged(
+        "Reviewer",
+        inbound=[{
+            "peer": "Coder",
+            "ref": "u",
+            "flow": "gw1",
+            "target_state": "Address_merge_decision",
+            "order": 9999,
+            "kind": "revises",
+        }],
+    )
+    rev._human_facing = True
+    rev._governance = [gov]
+    rev._governance_by_state = {"Address_merge_decision": gov}
+
+    d = _a2a_descriptor_from_tags(rev, {"reviewer", "coder"}, self_service="reviewer")
+
+    assert d["human_facing"] is True and d["a2a_server"] is True
+    assert d["states"] == []
+    assert d["governance"]["is_voting"] is True
+    assert d["governance"]["producer_services"] == ["coder"]
+    assert d["governance"]["owner_votes"] is True
+
+
+def test_human_facing_multi_merge_owner_keeps_state_dispatch():
+    gov_a = _w3_gov("gw1", [_p("Reviewer", 0.93), _p("Coder", 0.82)], ["Coder"])
+    gov_b = _w3_gov("gw2", [_p("Reviewer", 0.93), _p("Coder", 0.82)], ["Coder"])
+    rev = _tagged("Reviewer", inbound=[
+        {"peer": "Coder", "flow": "gw1", "target_state": "merge_a", "order": 9999, "kind": "revises"},
+        {"peer": "Coder", "flow": "gw2", "target_state": "merge_b", "order": 9999, "kind": "revises"},
+    ])
+    rev._human_facing = True
+    rev._governance = [gov_a, gov_b]
+    rev._governance_by_state = {"merge_a": gov_a, "merge_b": gov_b}
+
+    d = _a2a_descriptor_from_tags(rev, {"reviewer", "coder"}, self_service="reviewer")
+
+    assert {s["merge_key"] for s in d["states"]} == {"gw1", "gw2"}
+
+
 def test_non_service_from_human_is_ignored():
     # `from_Human` resolves to no service → entry stays entry (pre-existing behavior).
     sup = _A('Supervisor', ['coordinate_work', 'from_human', 'to_coder'])
