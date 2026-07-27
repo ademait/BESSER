@@ -296,26 +296,26 @@ class TestAgenticLane:
         assert "agent_diagram_ref" not in source
 
     def test_emit_agentic_lane_with_multiplicity(self):  # 3c
-        """An AgenticLane with multiplicity > 1 round-trips through exec'd code."""
+        """An AgenticLane with swarm_size > 1 round-trips through exec'd code."""
         t = Task(name="Code")
         lane = AgenticLane(name="Reviewer", role=AgentRole.SUPERVISION,
-                           trust_score=75, multiplicity=3, flow_nodes={t})
+                           trust_score=75, swarm_size=3, flow_nodes={t})
         p = Process(name="P", flow_nodes={t}, lanes={lane})
         model = BPMNModel(name="SwarmModel", processes={p})
         source = bpmn_model_to_code(model)
-        assert "multiplicity=3" in source
+        assert "swarm_size=3" in source
         recovered = _find_model(_exec_source(source))
         rec_lane = next(iter(next(iter(recovered.processes)).lanes))
         assert isinstance(rec_lane, AgenticLane)
-        assert rec_lane.multiplicity == 3
+        assert rec_lane.swarm_size == 3
 
     def test_emit_agentic_lane_default_multiplicity_omits_kwarg(self):  # 3c
-        """A default-1 lane emits no multiplicity kwarg and round-trips to 1."""
+        """A default-1 lane emits no swarm_size kwarg and round-trips to 1."""
         source = bpmn_model_to_code(_agentic_lane_model())
-        assert "multiplicity" not in source
+        assert "swarm_size" not in source
         recovered = _find_model(_exec_source(source))
         rec_lane = next(iter(next(iter(recovered.processes)).lanes))
-        assert rec_lane.multiplicity == 1
+        assert rec_lane.swarm_size == 1
 
 
 # ---------------------------------------------------------------------------

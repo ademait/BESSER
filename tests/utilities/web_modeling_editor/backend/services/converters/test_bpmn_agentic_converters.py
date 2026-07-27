@@ -739,7 +739,7 @@ def test_3c_roundtrip_agentic_lane_multiplicity():
     model = process_bpmn_diagram(_envelope(_lane_elements({"multiplicity": 4}), {}))
     [participant] = model.collaboration.participants
     [lane] = participant.process.lanes
-    assert lane.multiplicity == 4
+    assert lane.swarm_size == 4
     out = bpmn_object_to_json(model)
     lane_entry = next(e for e in out["elements"].values()
                       if e["type"] == "BPMNSwimlane")
@@ -751,7 +751,7 @@ def test_3c_import_agentic_lane_absent_multiplicity_is_one():
     model = process_bpmn_diagram(_envelope(_lane_elements({}), {}))
     [participant] = model.collaboration.participants
     [lane] = participant.process.lanes
-    assert lane.multiplicity == 1
+    assert lane.swarm_size == 1
 
 
 def test_3c_import_agentic_lane_zero_multiplicity_clamps_to_one():
@@ -759,7 +759,7 @@ def test_3c_import_agentic_lane_zero_multiplicity_clamps_to_one():
     model = process_bpmn_diagram(_envelope(_lane_elements({"multiplicity": 0}), {}))
     [participant] = model.collaboration.participants
     [lane] = participant.process.lanes
-    assert lane.multiplicity == 1
+    assert lane.swarm_size == 1
 
 
 def test_3c_export_non_agentic_lane_carries_default_multiplicity():

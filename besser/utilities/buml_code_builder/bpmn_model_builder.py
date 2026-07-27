@@ -12,6 +12,9 @@ emitted modules read the same way as the existing diagram-type builders.
 from typing import Optional
 
 from besser.BUML.metamodel.bpmn import (
+    AgenticGateway,
+    AgenticLane,
+    AgenticTask,
     Association,
     BPMNModel,
     CallActivity,
@@ -34,7 +37,6 @@ from besser.utilities.buml_code_builder.common import (
     safe_var_name,
 )
 from besser.utilities.utils import sort_by_timestamp
-
 
 # ---------------------------------------------------------------------------
 # Variable name dispenser
@@ -67,7 +69,6 @@ class _NameDispenser:
         self._for_obj[obj] = candidate
         return candidate
 
-
 # ---------------------------------------------------------------------------
 # Constructor emitters — one per concrete metamodel class
 # ---------------------------------------------------------------------------
@@ -75,7 +76,6 @@ class _NameDispenser:
 def _quoted(value: str) -> str:
     """Single-quoted, escape-safe Python string literal for an arbitrary value."""
     return f"'{_escape_python_string(value or '')}'"
-
 
 def _emit_layout_if_present(obj, var: str, body: list) -> None:
     """Emit ``<var>.layout = {...}`` when the object carries a non-empty layout dict.
@@ -88,7 +88,6 @@ def _emit_layout_if_present(obj, var: str, body: list) -> None:
     if getattr(obj, "layout", None):
         body.append(f"{var}.layout = {repr(obj.layout)}")
 
-
 def _emit_flow_node(node, container_var: str, dispenser: _NameDispenser,
                     body: list, needed: set) -> str:
     """Emit the constructor + ``add_flow_node`` call for one flow node.
@@ -98,7 +97,19 @@ def _emit_flow_node(node, container_var: str, dispenser: _NameDispenser,
     """
     var = dispenser.name_for(node)
 
-    if isinstance(node, Task):
+    if isinstance(node, AgenticTask):
+        needed.update({"AgenticTask", "TaskType", "LoopCharacteristics", "ReflectionMode"})
+        ref_kwarg = ""
+        if node.agent_diagram_ref is not None:
+            ref_kwarg = f", agent_diagram_ref={_quoted(node.agent_diagram_ref)}"
+        body.append(
+            f"{var} = AgenticTask(name={_quoted(node.name)}, "
+            f"task_type=TaskType.{node.task_type.name}, "
+            f"loop_characteristics=LoopCharacteristics.{node.loop_characteristics.name}, "
+            f"reflection_mode=ReflectionMode.{node.reflection_mode.name}, "
+            f"trust_score={node.trust_score}{ref_kwarg})"
+        )
+    elif isinstance(node, Task):
         needed.update({"Task", "TaskType", "LoopCharacteristics"})
         body.append(
             f"{var} = Task(name={_quoted(node.name)}, "
@@ -145,6 +156,17 @@ def _emit_flow_node(node, container_var: str, dispenser: _NameDispenser,
             f"direction=EventDirection.{node.direction.name}, "
             f"event_definition=EventDefinitionType.{node.event_definition.name})"
         )
+    elif isinstance(node, AgenticGateway):
+        needed.update({"AgenticGateway", "GatewayType", "GatewayRole"})
+        gov_kwarg = ""
+        if node.governance_dsl is not None:
+            gov_kwarg = f", governance_dsl={_quoted(node.governance_dsl)}"
+        body.append(
+            f"{var} = AgenticGateway(name={_quoted(node.name)}, "
+            f"gateway_type=GatewayType.{node.gateway_type.name}, "
+            f"gateway_role=GatewayRole.{node.gateway_role.name}, "
+            f"trust_score={node.trust_score}{gov_kwarg})"
+        )
     elif isinstance(node, Gateway):
         needed.update({"Gateway", "GatewayType"})
         body.append(
@@ -160,7 +182,6 @@ def _emit_flow_node(node, container_var: str, dispenser: _NameDispenser,
     _emit_layout_if_present(node, var, body)
     body.append(f"{container_var}.add_flow_node({var})")
     return var
-
 
 def _emit_artifact(artifact, process_var: str, dispenser: _NameDispenser,
                    body: list, needed: set) -> str:
@@ -182,7 +203,6 @@ def _emit_artifact(artifact, process_var: str, dispenser: _NameDispenser,
     body.append(f"{process_var}.add_artifact({var})")
     return var
 
-
 def _emit_data_object(data_object, process_var: str, dispenser: _NameDispenser,
                       body: list, needed: set) -> str:
     var = dispenser.name_for(data_object)
@@ -192,20 +212,33 @@ def _emit_data_object(data_object, process_var: str, dispenser: _NameDispenser,
     body.append(f"{process_var}.add_data_object({var})")
     return var
 
-
 def _emit_lane(lane, process_var: str, dispenser: _NameDispenser,
                body: list, needed: set) -> str:
     """Emit a Lane constructor + ``add_lane`` + an ``add_flow_node`` per member."""
     var = dispenser.name_for(lane)
-    needed.add("Lane")
-    body.append(f"{var} = Lane(name={_quoted(lane.name)})")
+    if isinstance(lane, AgenticLane):
+        needed.update({"AgenticLane", "AgentRole"})
+        ref_kwarg = ""
+        if lane.agent_diagram_ref is not None:
+            ref_kwarg = f", agent_diagram_ref={_quoted(lane.agent_diagram_ref)}"
+        swarm_kwarg = ""
+        if lane.swarm_size > 1:
+            swarm_kwarg = f", swarm_size={lane.swarm_size}"
+        body.append(
+            f"{var} = AgenticLane(name={_quoted(lane.name)}, "
+            f"role=AgentRole.{lane.role.name}, "
+            f"trust_score={lane.trust_score}{swarm_kwarg}{ref_kwarg})"
+        )
+    else:
+        needed.add("Lane")
+        body.append(f"{var} = Lane(name={_quoted(lane.name)})")
+
     _emit_layout_if_present(lane, var, body)
     body.append(f"{process_var}.add_lane({var})")
     for member in sort_by_timestamp(lane.flow_nodes):
         member_var = dispenser.name_for(member)
         body.append(f"{var}.add_flow_node({member_var})")
     return var
-
 
 def _emit_sequence_flow(flow: SequenceFlow, container_var: str,
                         dispenser: _NameDispenser, body: list, needed: set) -> None:
@@ -220,7 +253,6 @@ def _emit_sequence_flow(flow: SequenceFlow, container_var: str,
     ctor = f"SequenceFlow({', '.join(parts)})"
     _emit_connecting_object(flow, ctor, container_var, "add_sequence_flow", dispenser, body)
 
-
 def _emit_association(flow: Association, process_var: str,
                       dispenser: _NameDispenser, body: list, needed: set) -> None:
     needed.add("Association")
@@ -231,7 +263,6 @@ def _emit_association(flow: Association, process_var: str,
         parts.append(f"name={_quoted(flow.name)}")
     ctor = f"Association({', '.join(parts)})"
     _emit_connecting_object(flow, ctor, process_var, "add_association", dispenser, body)
-
 
 def _emit_data_association(flow: DataAssociation, process_var: str,
                            dispenser: _NameDispenser, body: list, needed: set) -> None:
@@ -244,7 +275,6 @@ def _emit_data_association(flow: DataAssociation, process_var: str,
     ctor = f"DataAssociation({', '.join(parts)})"
     _emit_connecting_object(flow, ctor, process_var, "add_data_association", dispenser, body)
 
-
 def _emit_message_flow(flow: MessageFlow, dispenser: _NameDispenser,
                        body: list, needed: set) -> None:
     src = dispenser.name_for(flow.source)
@@ -255,7 +285,6 @@ def _emit_message_flow(flow: MessageFlow, dispenser: _NameDispenser,
     needed.add("MessageFlow")
     ctor = f"MessageFlow({', '.join(parts)})"
     _emit_connecting_object(flow, ctor, "collaboration", "add_message_flow", dispenser, body)
-
 
 def _emit_connecting_object(flow, ctor_expr: str, target_var: str, add_method: str,
                             dispenser: _NameDispenser, body: list) -> None:
@@ -274,7 +303,6 @@ def _emit_connecting_object(flow, ctor_expr: str, target_var: str, add_method: s
         body.append(f"{target_var}.{add_method}({var})")
     else:
         body.append(f"{target_var}.{add_method}({ctor_expr})")
-
 
 # ---------------------------------------------------------------------------
 # Container walk
@@ -298,13 +326,11 @@ def _emit_container(container, container_var: str, dispenser: _NameDispenser,
     for flow in sort_by_timestamp(container.sequence_flows):
         _emit_sequence_flow(flow, container_var, dispenser, body, needed)
 
-
 # ---------------------------------------------------------------------------
 # Public API
 # ---------------------------------------------------------------------------
 
 _BANNER = "####################\n#    BPMN MODEL    #\n####################"
-
 
 def bpmn_model_to_code(model: BPMNModel, file_path: Optional[str] = None,
                        model_var_name: str = "bpmn_model") -> str:
@@ -433,7 +459,6 @@ def bpmn_model_to_code(model: BPMNModel, file_path: Optional[str] = None,
             fh.write(result)
 
     return result
-
 
 def _format_imports(needed: set) -> str:
     """Format the ``from besser.BUML.metamodel.bpmn import (...)`` block.

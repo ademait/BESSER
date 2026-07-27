@@ -255,7 +255,7 @@ def _build_node(elem: dict):
             # No UUID validation (audit OQ-2) — pass through verbatim.
             agent_ref = elem.get("agentDiagramRef") or None
             # WME 3c: swarm size; absent → 1 (single agent).
-            swarm_size  = _clamp_swarm_size(elem.get("multiplicity", 1))
+            swarm_size = _clamp_swarm_size(elem.get("multiplicity", 1))
             return AgenticLane(name=name, role=role, trust_score=trust,
                                agent_diagram_ref=agent_ref,
                                swarm_size=swarm_size)
