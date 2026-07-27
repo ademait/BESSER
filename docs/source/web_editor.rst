@@ -148,8 +148,13 @@ syntax.
 The editor round-trips ``.bpmn`` files entirely in the browser (BPMN 2.0
 XML import / export). The backend converters
 (``process_bpmn_diagram`` / ``bpmn_object_to_json``) handle the
-JSON ↔ B-UML side, and ``bpmn_model_to_code`` / ``bpmn_to_json`` close the
+JSON ↔ B-UML side, and ``bpmn_model_to_code`` / ``bpmn_buml_to_json`` close the
 round-trip through executable BUML ``.py`` files.
+
+.. note::
+   The frontend BPMN editor is being integrated into the
+   `BESSER-WEB-MODELING-EDITOR <https://github.com/BESSER-PEARL/BESSER-WEB-MODELING-EDITOR>`_
+   repository; check there for the latest availability.
 
 The editor also supports BESSER's :ref:`bpmn-agentic-extension`. Agentic BPMN
 is the process view within an agentic swarm: lanes identify participating

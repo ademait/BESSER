@@ -47,7 +47,6 @@ from besser.utilities.web_modeling_editor.backend.services.converters import (
     process_quantum_diagram,
     process_nn_diagram,
     process_bpmn_diagram,
-    process_deployment_diagram,
 )
 from besser.utilities.web_modeling_editor.backend.constants.user_buml_model import (
     domain_model as user_reference_domain_model,
@@ -81,6 +80,9 @@ from besser.utilities.web_modeling_editor.backend.services.utils.user_profile_ut
     generate_user_profile_document as _generate_user_profile_document,
     normalize_user_model_output as _normalize_user_model_output,
     safe_path as _safe_path,
+)
+from besser.utilities.web_modeling_editor.backend.services.utils.gui_personalization_utils import (
+    personalize_gui_page as run_gui_personalization,
 )
 
 # Backend configuration
@@ -235,6 +237,46 @@ async def recommend_agent_config_llm(
         raise GenerationError("Failed to generate LLM recommendation") from exc
 
 
+@router.post("/personalize-gui-page")
+@handle_endpoint_errors("personalize_gui_page")
+async def personalize_gui_page(payload: Dict[str, Any] = Body(...)):
+    """Personalize a GUI page (GrapesJS) for a user profile using an LLM.
+
+    Open endpoint (no GitHub session required). The OpenAI API key is resolved
+    from the payload or the server's ``OPENAI_API_KEY`` environment variable.
+
+    Request body:
+        guiPage: {"components": [...], "css": [...]}  -- a GrapesJS page snapshot
+        userProfileModel: <UserDiagram UML model JSON>
+        pageName: str (optional)
+        model: str (optional OpenAI model id)
+
+    Returns the same ``{components, css}`` shape adapted in style and content,
+    ready to be imported back into the editor as a page variant.
+    """
+    if not isinstance(payload, dict):
+        raise ValidationError("Request body must be a JSON object")
+
+    # All validation, prompt building, the LLM call and response parsing live in
+    # gui_personalization_utils (mirroring agent_personalization). The router
+    # only resolves the API key, delegates off the event loop, and shapes the
+    # HTTP response; @handle_endpoint_errors maps ValidationError/GenerationError.
+    result = await asyncio.to_thread(
+        run_gui_personalization,
+        payload.get("guiPage"),
+        payload.get("userProfileModel"),
+        page_name=payload.get("pageName"),
+        model=payload.get("model"),
+        openai_api_key=extract_openai_api_key(payload),
+    )
+    return {
+        "guiPage": {"components": result["components"], "css": result["css"]},
+        "source": "openai",
+        "model": result["model"],
+        "generatedAt": _utc_now_iso(),
+    }
+
+
 @router.get("/agent-config-manual-mapping")
 @handle_endpoint_errors("get_agent_config_manual_mapping")
 async def get_agent_config_manual_mapping(
@@ -290,6 +332,7 @@ def generate_agent_files(
     agent_model,
     config,
     generation_mode: GenerationMode = GenerationMode.FULL,
+    config_yaml: Optional[str] = None,
 ):
     """
     Generate agent files from an agent model.
@@ -348,6 +391,7 @@ def generate_agent_files(
                     config=config,
                     openai_api_key=openai_api_key,
                     generation_mode=generation_mode,
+                    config_yaml=config_yaml,
                 )
             else:
                 # Fall back to the original agent model
@@ -357,6 +401,7 @@ def generate_agent_files(
                     config=config,
                     openai_api_key=openai_api_key,
                     generation_mode=generation_mode,
+                    config_yaml=config_yaml,
                 )
 
             generator.generate()
@@ -439,13 +484,6 @@ async def generate_code_output_from_project(input_data: ProjectInput):
     if generator_type == "web_app":
         return await _handle_web_app_project_generation(input_data, generator_info, config)
 
-    # 6b-2 — deployment generators (docker_compose, future terraform) run at the
-    # project level so the AgentDiagrams are in scope for BAF agent baking.
-    if generator_info.category == "deployment":
-        return await _handle_deployment_project_generation(
-            input_data, generator_info, config, generator_type
-        )
-
     # Handle generators that consume a non-class diagram (Qiskit → quantum,
     # PyTorch/TensorFlow → neural network). The required diagram type comes
     # from the registry, so this branch covers every such generator without
@@ -468,6 +506,7 @@ async def generate_code_output_from_project(input_data: ProjectInput):
             lastUpdate=diagram.lastUpdate,
             generator=generator_type,
             config=config,
+            configYaml=diagram.configYaml,
             referenceDiagramData=getattr(diagram, "referenceDiagramData", None),
         )
         return await generate_code_output(diagram_input)
@@ -488,6 +527,7 @@ async def generate_code_output_from_project(input_data: ProjectInput):
         lastUpdate=current_diagram.lastUpdate,
         generator=generator_type,
         config=config,
+        configYaml=current_diagram.configYaml,
         referenceDiagramData=current_diagram.referenceDiagramData
     )
 
@@ -538,12 +578,6 @@ async def generate_code_output(input_data: DiagramInput):
         if generator_info.category == "business_process":
             return await _generate_bpmn(json_data, generator_type, generator_info.generator_class, temp_dir)
 
-        # Handle UML Deployment generators (reads DeploymentDiagram)
-        if generator_info.category == "deployment":
-            return await _handle_deployment_diagram_generation(
-                json_data, generator_type, generator_info, input_data.config, temp_dir,
-            )
-
         if generator_info.category == "object_model":
             diagram_type = _get_diagram_type(json_data)
             if diagram_type == "UserDiagram":
@@ -589,43 +623,67 @@ async def _handle_web_app_project_generation(input_data: ProjectInput, generator
             detail="ClassDiagram is required for Web App generator"
         )
 
+    # Personalization versions (optional). When present, the frontend has
+    # pre-assembled one COMPLETE GUI model per version (base + each user
+    # profile), each already resolved page-by-page. When absent, we generate a
+    # single app from the GUI diagram's own model (unchanged behavior).
+    web_app_versions = config.get("webAppVersions") if isinstance(config, dict) else None
+    if web_app_versions:
+        version_specs = [
+            (str(v.get("slug") or f"version-{i + 1}"), v.get("guiModel"))
+            for i, v in enumerate(web_app_versions)
+        ]
+    else:
+        version_specs = [(None, gui_diagram.model)]
+
+    multi = len(version_specs) > 1
+    generator_class = generator_info.generator_class
+
     with tempfile.TemporaryDirectory(prefix=TEMP_DIR_PREFIX) as temp_dir:
-        # Process class diagram to BUML
-        buml_model = process_class_diagram(class_diagram.model_dump())
+        for slug, gui_json in version_specs:
+            # Re-derive the class BUML per version so the generator can't leak
+            # mutations from one version into the next.
+            buml_model = process_class_diagram(class_diagram.model_dump())
+            gui_model = process_gui_diagram(gui_json, class_diagram.model, buml_model)
 
-        gui_model = process_gui_diagram(gui_diagram.model, class_diagram.model, buml_model)
-
-        # Collect every AgentDiagram in the project if the GUI uses agent components.
-        # The frontend dropdown enumerates all agents, so the generator must
-        # satisfy any binding — we don't filter to the active reference here.
-        agent_models = []
-        agent_configs = {}
-        has_agent_components = _check_for_agent_components(gui_model)
-
-        if has_agent_components:
-            project_agent_config = config.get('agentConfig') if isinstance(config, dict) else None
-            default_cfg = project_agent_config or config
-            agent_models, agent_configs = collect_agents_from_diagrams(
-                input_data.diagrams.get("AgentDiagram", []),
-                default_config=default_cfg,
-            )
-            for name, cfg in agent_configs.items():
-                logger.debug("[WebApp agent] resolved config for %s: %s",
-                             name,
-                             json.dumps(sanitize_config(cfg), indent=2, default=str) if cfg else 'None')
-            if not agent_models:
-                logger.warning(
-                    "GUI contains agent components but no AgentDiagram was found. "
-                    "Agent components will not be functional."
+            # Collect every AgentDiagram in the project if this version's GUI uses
+            # agent components. The frontend dropdown enumerates all agents, so the
+            # generator must satisfy any binding — we don't filter to the active
+            # reference here.
+            agent_models = []
+            agent_configs = {}
+            agent_config_yamls: dict = {}
+            if _check_for_agent_components(gui_model):
+                project_agent_config = config.get('agentConfig') if isinstance(config, dict) else None
+                default_cfg = project_agent_config or config
+                agent_models, agent_configs, agent_config_yamls = collect_agents_from_diagrams(
+                    input_data.diagrams.get("AgentDiagram", []),
+                    default_config=default_cfg,
                 )
+                for name, cfg in agent_configs.items():
+                    logger.debug("[WebApp agent] resolved config for %s: %s",
+                                 name,
+                                 json.dumps(sanitize_config(cfg), indent=2, default=str) if cfg else 'None')
+                if not agent_models:
+                    logger.warning(
+                        "GUI contains agent components but no AgentDiagram was found. "
+                        "Agent components will not be functional."
+                    )
 
-        # Generate Web App TypeScript project
-        generator_class = generator_info.generator_class
+            # Single version → generate at the zip root (current layout).
+            # Multiple versions → one profile-named subfolder each.
+            out_dir = temp_dir
+            if multi:
+                out_dir = _safe_path(temp_dir, os.path.basename(slug))
+                os.makedirs(out_dir, exist_ok=True)
 
-        return await _generate_web_app(
-            buml_model, gui_model, generator_class, config, temp_dir,
-            agent_models=agent_models, agent_configs=agent_configs,
-        )
+            await _run_web_app_generator(
+                buml_model, gui_model, generator_class, out_dir,
+                agent_models=agent_models, agent_configs=agent_configs,
+                agent_config_yamls=agent_config_yamls,
+            )
+
+        return _create_zip_response(temp_dir, "web_app")
 
 
 def _producer_agent_names(gateway_id, relationships, items_by_id, lane_ref,
@@ -965,6 +1023,7 @@ def _streaming_zip(zip_buffer: io.BytesIO, file_name: str) -> StreamingResponse:
 async def _handle_agent_generation(json_data: dict):
     """Handle agent diagram generation by dispatching to specialized helpers."""
     config = json_data.get('config', {})
+    config_yaml: Optional[str] = json_data.get('configYaml') if isinstance(json_data.get('configYaml'), str) else None
     sanitized_config_log = (
         json.dumps(sanitize_config(config), indent=2, default=str) if config else 'None'
     )
@@ -972,7 +1031,9 @@ async def _handle_agent_generation(json_data: dict):
 
     if config is None:
         agent_model = process_agent_diagram(json_data)
-        zip_buffer, file_name = await asyncio.to_thread(generate_agent_files, agent_model, config)
+        zip_buffer, file_name = await asyncio.to_thread(
+            generate_agent_files, agent_model, config, config_yaml=config_yaml
+        )
         return _streaming_zip(zip_buffer, file_name)
 
     is_config_dict = isinstance(config, dict)
@@ -995,22 +1056,26 @@ async def _handle_agent_generation(json_data: dict):
     if base_model_snapshot is not None and isinstance(variation_entries, list):
         buf, name = handle_variation_generation(
             json_data, config, base_model_snapshot, variation_entries, generate_agent_files,
+            config_yaml=config_yaml,
         )
         return _streaming_zip(buf, name)
 
     if configuration_variants and isinstance(configuration_variants, list):
         buf, name = handle_configuration_variants(
             json_data, configuration_variants, generate_agent_files,
+            config_yaml=config_yaml,
         )
         return _streaming_zip(buf, name)
 
     if is_config_dict and 'personalizationMapping' in config:
-        buf, name = handle_personalized_agent(json_data, config, generate_agent_files)
+        buf, name = handle_personalized_agent(json_data, config, generate_agent_files, config_yaml=config_yaml)
         return _streaming_zip(buf, name)
 
     # Single agent fallback
     agent_model = process_agent_diagram(json_data)
-    zip_buffer, file_name = await asyncio.to_thread(generate_agent_files, agent_model, config)
+    zip_buffer, file_name = await asyncio.to_thread(
+        generate_agent_files, agent_model, config, config_yaml=config_yaml
+    )
     return _streaming_zip(zip_buffer, file_name)
 
 
@@ -1351,34 +1416,6 @@ async def _generate_bpmn(json_data: dict, generator_type: str, generator_class, 
     return _create_file_response(temp_dir, generator_type)
 
 
-async def _handle_deployment_diagram_generation(
-    json_data: dict,
-    generator_type: str,
-    generator_info,
-    config: dict,
-    temp_dir: str,
-):
-    """Handle generators that consume a UML DeploymentModel (category='deployment').
-
-    Shared by all UML-Deployment generators (DockerComposeGenerator, and future
-    Terraform extension). Processes the WME DeploymentDiagram JSON via
-    ``process_deployment_diagram``, instantiates the generator, and returns a
-    file or ZIP response depending on ``generator_info.output_type``.
-    """
-    try:
-        deployment_model = process_deployment_diagram(json_data)
-    except (KeyError, TypeError, AttributeError) as exc:
-        raise ConversionError(f"Malformed Deployment diagram payload: {exc}") from exc
-
-    generator_class = generator_info.generator_class
-    generator_instance = generator_class(deployment_model, output_dir=temp_dir)
-    await asyncio.to_thread(generator_instance.generate)
-
-    if generator_info.output_type == "zip":
-        return _create_zip_response(temp_dir, generator_type)
-    return _create_file_response(temp_dir, generator_type)
-
-
 async def _generate_qiskit(json_data: dict, generator_class, config: dict, temp_dir: str):
     """Generate Qiskit code."""
     # Validate that this is a quantum diagram (has 'cols' in model)
@@ -1451,18 +1488,33 @@ def _check_container_for_agent_components(container):
                 return True
     return False
 
+async def _run_web_app_generator(buml_model, gui_model, generator_class, out_dir: str,
+                                 agent_models=None, agent_configs=None, agent_config_yamls=None):
+    """Run the web app generator into ``out_dir`` WITHOUT zipping.
+
+    Split out from ``_generate_web_app`` so multiple personalization versions can
+    each be generated into their own subdirectory before a single zip is built.
+    """
+    generator_instance = generator_class(
+        buml_model, gui_model, output_dir=out_dir,
+        agent_models=agent_models, agent_configs=agent_configs,
+        agent_config_yamls=agent_config_yamls,
+    )
+    await asyncio.to_thread(generator_instance.generate)
+
+
 async def _generate_web_app(buml_model, gui_model, generator_class, config: dict, temp_dir: str,
-                            agent_models=None, agent_configs=None):
-    """Generate web application files.
+                            agent_models=None, agent_configs=None, agent_config_yamls=None):
+    """Generate web application files (single version) and return a ZIP response.
 
     Supports multi-agent projects: ``agent_models`` is a list and each is emitted
     under ``agents/<slug>/`` in the generated output.
     """
-    generator_instance = generator_class(
-        buml_model, gui_model, output_dir=temp_dir,
+    await _run_web_app_generator(
+        buml_model, gui_model, generator_class, temp_dir,
         agent_models=agent_models, agent_configs=agent_configs,
+        agent_config_yamls=agent_config_yamls,
     )
-    await asyncio.to_thread(generator_instance.generate)
     return _create_zip_response(temp_dir, "web_app")
 
 @handle_endpoint_errors("_generate_standard")

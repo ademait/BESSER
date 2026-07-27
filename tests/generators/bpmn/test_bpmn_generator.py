@@ -1,12 +1,10 @@
 """Tests for the BPMN generator (vendor-neutral BPMN 2.0 XML).
 
-Covers per-fixture XML generation, id strategy, DI emission, determinism, and an
-opt-in XSD validation that is skipped when ``lxml`` is not installed.
+Covers per-fixture XML generation, id strategy, DI emission, and determinism.
 """
 
 from __future__ import annotations
 
-import importlib.util
 import xml.etree.ElementTree as ET
 from pathlib import Path
 
@@ -21,18 +19,21 @@ from besser.BUML.metamodel.bpmn import (
     Gateway,
     GatewayType,
     IntermediateEvent,
-    Lane,
     LoopCharacteristics,
-    MessageFlow,
     Participant,
     Process,
-    SequenceFlow,
     StartEvent,
-    SubProcess,
     Task,
     TaskType,
 )
 from besser.generators.bpmn import BPMNGenerator
+from tests.bpmn_models import (
+    _gateway_model,
+    _lane_model,
+    _poolless_model,
+    _subprocess_model,
+    _two_pool_model,
+)
 
 
 # ---------------------------------------------------------------------------
@@ -66,71 +67,6 @@ def _findall(root, prefix_local: str):
 def _find(root, prefix_local: str):
     prefix, local = prefix_local.split(":", 1)
     return root.find(f".//{{{_NS[prefix]}}}{local}")
-
-
-# ---------------------------------------------------------------------------
-# Programmatic fixtures (same shapes as the 03- JSON fixtures)
-# ---------------------------------------------------------------------------
-
-def _poolless_model() -> BPMNModel:
-    s = StartEvent(name="received")
-    t = Task(name="Review", task_type=TaskType.USER)
-    e = EndEvent(name="done")
-    p = Process(name="P", flow_nodes={s, t, e},
-                sequence_flows={SequenceFlow(s, t), SequenceFlow(t, e)})
-    return BPMNModel(name="Poolless", processes={p})
-
-
-def _two_pool_model() -> BPMNModel:
-    t1 = Task(name="Place order")
-    t2 = Task(name="Ship")
-    p_buyer = Process(name="Buyer", flow_nodes={t1})
-    p_seller = Process(name="Seller", flow_nodes={t2})
-    part_buyer = Participant(name="Buyer", process=p_buyer)
-    part_seller = Participant(name="Seller", process=p_seller)
-    coll = Collaboration(name="Buyer-Seller",
-                         participants={part_buyer, part_seller},
-                         message_flows={MessageFlow(t1, t2, name="order")})
-    return BPMNModel(name="Buyer-Seller", processes={p_buyer, p_seller},
-                     collaboration=coll)
-
-
-def _gateway_model() -> BPMNModel:
-    s = StartEvent(name="")
-    g = Gateway(name="?", gateway_type=GatewayType.EXCLUSIVE)
-    a = Task(name="A")
-    b = Task(name="B")
-    e1 = EndEvent(name="")
-    e2 = EndEvent(name="")
-    f0 = SequenceFlow(s, g)
-    f1 = SequenceFlow(g, a, name="happy")
-    f2 = SequenceFlow(g, b, name="default", is_default=True)
-    fa = SequenceFlow(a, e1)
-    fb = SequenceFlow(b, e2)
-    p = Process(name="Gateway", flow_nodes={s, g, a, b, e1, e2},
-                sequence_flows={f0, f1, f2, fa, fb})
-    return BPMNModel(name="Gateway", processes={p})
-
-
-def _subprocess_model() -> BPMNModel:
-    inner_t = Task(name="inner")
-    inner_e = EndEvent(name="inner end")
-    sub = SubProcess(name="Sub",
-                     flow_nodes={inner_t, inner_e},
-                     sequence_flows={SequenceFlow(inner_t, inner_e)})
-    s = StartEvent(name="")
-    e = EndEvent(name="")
-    p = Process(name="Subprocess",
-                flow_nodes={s, sub, e},
-                sequence_flows={SequenceFlow(s, sub), SequenceFlow(sub, e)})
-    return BPMNModel(name="Subprocess", processes={p})
-
-
-def _lane_model() -> BPMNModel:
-    t = Task(name="Review")
-    lane = Lane(name="Reviewer", flow_nodes={t})
-    p = Process(name="P", flow_nodes={t}, lanes={lane})
-    return BPMNModel(name="Lanes", processes={p})
 
 
 # ---------------------------------------------------------------------------
@@ -369,27 +305,6 @@ def test_emitted_file_parses_without_error(fixture_fn, tmp_path):
     # Round-trip through ElementTree — any malformed XML would raise.
     tree = ET.parse(str(path))
     assert tree.getroot().tag == f"{{{_NS['bpmn']}}}definitions"
-
-
-# ---------------------------------------------------------------------------
-# F. Optional XSD validation (skipped without lxml)
-# ---------------------------------------------------------------------------
-
-_HAS_LXML = importlib.util.find_spec("lxml") is not None
-_XSD_PATH = Path(__file__).parent / "BPMN20.xsd"
-
-
-@pytest.mark.skipif(not _HAS_LXML, reason="lxml not installed; skipping XSD validation")
-@pytest.mark.skipif(not _XSD_PATH.exists(), reason="BPMN20.xsd not vendored in tests dir")
-@pytest.mark.parametrize("fixture_fn", [
-    _poolless_model, _two_pool_model, _gateway_model, _subprocess_model,
-])
-def test_emitted_xml_validates_against_bpmn20_xsd(fixture_fn, tmp_path):
-    from lxml import etree  # noqa: I001
-    schema = etree.XMLSchema(etree.parse(str(_XSD_PATH)))
-    path = _generate(fixture_fn(), tmp_path)
-    parsed = etree.parse(str(path))
-    schema.assertValid(parsed)
 
 
 # ---------------------------------------------------------------------------

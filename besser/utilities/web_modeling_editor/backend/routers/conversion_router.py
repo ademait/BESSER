@@ -12,6 +12,8 @@ import tempfile
 import uuid
 import importlib.util
 import json
+
+import requests
 from copy import deepcopy
 from datetime import datetime, timezone
 
@@ -35,8 +37,6 @@ from besser.utilities.buml_code_builder.project_builder import project_to_code
 from besser.utilities.buml_code_builder.state_machine_builder import state_machine_to_code
 from besser.utilities.buml_code_builder.nn_model_builder import nn_model_to_code
 from besser.utilities.buml_code_builder.bpmn_model_builder import bpmn_model_to_code
-from besser.utilities.buml_code_builder.component_model_builder import component_model_to_code
-from besser.utilities.buml_code_builder.deployment_model_builder import deployment_model_to_code
 
 # Backend models
 from besser.utilities.web_modeling_editor.backend.models import (
@@ -53,8 +53,6 @@ from besser.utilities.web_modeling_editor.backend.services.converters import (
     process_object_diagram,
     process_nn_diagram,
     process_bpmn_diagram,
-    process_component_diagram,
-    process_deployment_diagram,
     json_to_buml_project,
     # BUML to JSON converters
     class_buml_to_json,
@@ -64,9 +62,7 @@ from besser.utilities.web_modeling_editor.backend.services.converters import (
     gui_buml_to_json,
     project_to_json,
     nn_buml_to_json,
-    bpmn_to_json,
-    component_buml_to_json,
-    deployment_buml_to_json,
+    bpmn_buml_to_json,
 )
 
 # Backend services - Other services
@@ -78,6 +74,9 @@ from besser.utilities.web_modeling_editor.backend.services.utils.user_profile_ut
 )
 from besser.utilities.web_modeling_editor.backend.services.reverse_engineering import (
     csv_to_domain_model,
+)
+from besser.utilities.web_modeling_editor.backend.services.svg_postprocess import (
+    fit_svg_viewbox_to_content,
 )
 
 # Backend configuration
@@ -93,6 +92,7 @@ from besser.utilities.web_modeling_editor.backend.constants.constants import (
     CSV_TEMP_DIR_PREFIX,
     OUTPUT_DIR_NAME,
     AGENT_MODEL_FILENAME,
+    BPMN_DIAGRAM_TYPE,
 )
 
 # Centralized error handling
@@ -182,9 +182,11 @@ def _validate_file_content(content: bytes, filename: str) -> None:
             )
 
     elif ext == ".py":
-        # Must be valid Python syntax
+        # Must be valid Python syntax. Decode with utf-8-sig so a leading UTF-8
+        # BOM (common from Windows editors) is stripped instead of tripping the
+        # parser with "invalid non-printable character U+FEFF".
         try:
-            text = content.decode("utf-8")
+            text = content.decode("utf-8-sig")
         except UnicodeDecodeError:
             raise HTTPException(status_code=400, detail="Python file is not valid UTF-8 text.")
         try:
@@ -363,7 +365,7 @@ async def export_buml(input_data: DiagramInput):
                 },
             )
 
-        elif elements_data.get("type") == "BPMNDiagram":
+        elif elements_data.get("type") == BPMN_DIAGRAM_TYPE:
             try:
                 bpmn_model = process_bpmn_diagram(json_data)
             except (KeyError, TypeError, AttributeError) as exc:
@@ -394,46 +396,6 @@ async def export_buml(input_data: DiagramInput):
                 content=file_content,
                 media_type="text/plain",
                 headers={"Content-Disposition": 'attachment; filename="nn_model.py"'},
-            )
-
-        elif elements_data.get("type") == "ComponentDiagram":
-            try:
-                component_model = process_component_diagram(json_data)
-            except (KeyError, TypeError, AttributeError) as exc:
-                raise ConversionError(
-                    f"Malformed Component diagram payload: {exc}"
-                ) from exc
-            output_file_path = os.path.join(temp_dir, "component_model.py")
-            component_model_to_code(
-                model=component_model, file_path=output_file_path,
-            )
-            file_content = await _read_file(output_file_path, "rb")
-            return Response(
-                content=file_content,
-                media_type="text/plain",
-                headers={
-                    "Content-Disposition": 'attachment; filename="component_model.py"',
-                },
-            )
-
-        elif elements_data.get("type") == "DeploymentDiagram":
-            try:
-                deployment_model = process_deployment_diagram(json_data)
-            except (KeyError, TypeError, AttributeError) as exc:
-                raise ConversionError(
-                    f"Malformed Deployment diagram payload: {exc}"
-                ) from exc
-            output_file_path = os.path.join(temp_dir, "deployment_model.py")
-            deployment_model_to_code(
-                model=deployment_model, file_path=output_file_path,
-            )
-            file_content = await _read_file(output_file_path, "rb")
-            return Response(
-                content=file_content,
-                media_type="text/plain",
-                headers={
-                    "Content-Disposition": 'attachment; filename="deployment_model.py"',
-                },
             )
 
         else:
@@ -505,19 +467,6 @@ async def get_single_json_model(buml_file: UploadFile = File(...)):
         'bpmnmodel(', '.add_process(', '.add_flow_node(', '.add_sequence_flow('
     ])
 
-    # UML Component / Deployment markers (03-... §8.3). Distinct enough not
-    # to collide with cloud-infra `besser.BUML.metamodel.deployment` (which
-    # uses Cluster / K8s Deployment / Node-with-IPs class names).
-    is_uml_component = any(keyword in content_lower for keyword in [
-        'componentmodel(', '.add_component(', '.add_relationship(',
-        'agentcategory.', 'agenticedge('
-    ])
-
-    is_uml_deployment = any(keyword in content_lower for keyword in [
-        'deploymentmodel(', '.add_artifact(', 'deploymentrelation(',
-        'communicationpath(',
-    ])
-
     is_project = 'project(' in content_lower or 'def create_project' in content_lower
 
     # Try to parse based on detected type
@@ -525,37 +474,52 @@ async def get_single_json_model(buml_file: UploadFile = File(...)):
         try:
             parsed_project = project_to_json(buml_content)
 
-            # Find the first available diagram in the project
-            if parsed_project.get("ClassDiagram") and parsed_project["ClassDiagram"].get("model"):
-                diagram_data = parsed_project["ClassDiagram"]
-                diagram_type = "ClassDiagram"
-            elif parsed_project.get("ObjectDiagram") and parsed_project["ObjectDiagram"].get("model"):
-                diagram_data = parsed_project["ObjectDiagram"]
-                diagram_type = "ObjectDiagram"
-            elif parsed_project.get("StateMachineDiagram") and parsed_project["StateMachineDiagram"].get("model"):
-                diagram_data = parsed_project["StateMachineDiagram"]
-                diagram_type = "StateMachineDiagram"
-            elif parsed_project.get("AgentDiagram") and parsed_project["AgentDiagram"].get("model"):
-                diagram_data = parsed_project["AgentDiagram"]
-                diagram_type = "AgentDiagram"
-            elif parsed_project.get("GUINoCodeDiagram") and parsed_project["GUINoCodeDiagram"].get("model"):
-                diagram_data = parsed_project["GUINoCodeDiagram"]
-                diagram_type = "GUINoCodeDiagram"
-            elif parsed_project.get("NNDiagram") and parsed_project["NNDiagram"].get("model"):
-                diagram_data = parsed_project["NNDiagram"]
-                diagram_type = "NNDiagram"
-            elif parsed_project.get("QuantumCircuitDiagram") and parsed_project["QuantumCircuitDiagram"].get("model"):
-                diagram_data = parsed_project["QuantumCircuitDiagram"]
-                diagram_type = "QuantumCircuitDiagram"
-            elif parsed_project.get("BPMNDiagram") and parsed_project["BPMNDiagram"].get("model"):
-                diagram_data = parsed_project["BPMNDiagram"]
-                diagram_type = "BPMNDiagram"
-            elif parsed_project.get("ComponentDiagram") and parsed_project["ComponentDiagram"].get("model"):
-                diagram_data = parsed_project["ComponentDiagram"]
-                diagram_type = "ComponentDiagram"
-            elif parsed_project.get("DeploymentDiagram") and parsed_project["DeploymentDiagram"].get("model"):
-                diagram_data = parsed_project["DeploymentDiagram"]
-                diagram_type = "DeploymentDiagram"
+            # project_to_json emits the schemaVersion=3 shape:
+            #   { diagrams: { ClassDiagram: [ {id,title,model,...}, ... ], ... },
+            #     currentDiagramType: "...",
+            #     currentDiagramIndices: { ClassDiagram: 0, ... } }
+            # Pick the currently-active diagram first; fall back through the
+            # remaining types in the legacy priority order so single-diagram
+            # endpoints still surface *something* if the active one is empty.
+            diagrams_map = parsed_project.get("diagrams") or {}
+            current_indices = parsed_project.get("currentDiagramIndices") or {}
+            current_type = parsed_project.get("currentDiagramType")
+
+            def _entry_is_populated(entry):
+                model = (entry or {}).get("model") or {}
+                return bool(
+                    model.get("elements")
+                    or model.get("relationships")
+                    or model.get("pages")
+                )
+
+            def _pick_entry(dtype):
+                entries = diagrams_map.get(dtype) or []
+                if not entries:
+                    return None
+                idx = current_indices.get(dtype, 0)
+                if not isinstance(idx, int) or idx < 0 or idx >= len(entries):
+                    idx = 0
+                entry = entries[idx]
+                return entry if _entry_is_populated(entry) else None
+
+            priority = []
+            if current_type:
+                priority.append(current_type)
+            for dtype in (
+                "ClassDiagram", "ObjectDiagram", "StateMachineDiagram",
+                "AgentDiagram", "GUINoCodeDiagram", "NNDiagram",
+                "QuantumCircuitDiagram", BPMN_DIAGRAM_TYPE,
+            ):
+                if dtype not in priority:
+                    priority.append(dtype)
+
+            for dtype in priority:
+                entry = _pick_entry(dtype)
+                if entry is not None:
+                    diagram_data = entry
+                    diagram_type = dtype
+                    break
 
             if diagram_data and diagram_data.get("title"):
                 diagram_title = diagram_data["title"]
@@ -630,44 +594,21 @@ async def get_single_json_model(buml_file: UploadFile = File(...)):
     elif is_bpmn:
         try:
             logger.info("Detected BPMN diagram, parsing...")
-            bpmn_json = bpmn_to_json(buml_content)
+            bpmn_json = bpmn_buml_to_json(buml_content)
             diagram_data = {
                 "title": diagram_title,
                 "model": bpmn_json
             }
-            diagram_type = "BPMNDiagram"
+            diagram_type = BPMN_DIAGRAM_TYPE
         except Exception as bpmn_error:
             logger.error("BPMN diagram parsing failed: %s", str(bpmn_error))
-
-    elif is_uml_component:
-        try:
-            logger.info("Detected UML Component diagram, parsing...")
-            component_json = component_buml_to_json(buml_content)
-            diagram_data = {
-                "title": diagram_title,
-                "model": component_json,
-            }
-            diagram_type = "ComponentDiagram"
-        except Exception as comp_error:
-            logger.error("Component diagram parsing failed: %s", str(comp_error))
-
-    elif is_uml_deployment:
-        try:
-            logger.info("Detected UML Deployment diagram, parsing...")
-            deployment_json = deployment_buml_to_json(buml_content)
-            diagram_data = {
-                "title": diagram_title,
-                "model": deployment_json,
-            }
-            diagram_type = "DeploymentDiagram"
-        except Exception as dep_error:
-            logger.error("Deployment diagram parsing failed: %s", str(dep_error))
 
     # Check if we successfully parsed any diagram
     if diagram_data is None or diagram_type is None:
         raise ValueError(
             "Could not parse BUML file. The file format was not recognized as a valid BUML diagram or project. "
-            "Supported formats: ClassDiagram, ObjectDiagram, StateMachineDiagram, AgentDiagram, GUINoCodeDiagram, NNDiagram, BPMNDiagram, ComponentDiagram, DeploymentDiagram, or Project."
+            "Supported formats: ClassDiagram, ObjectDiagram, StateMachineDiagram, "
+            "AgentDiagram, GUINoCodeDiagram, NNDiagram, BPMNDiagram, or Project."
         )
 
     # Return the diagram in the format expected by the frontend
@@ -681,6 +622,54 @@ async def get_single_json_model(buml_file: UploadFile = File(...)):
         "exportedAt": datetime.now(timezone.utc).isoformat(),
         "version": API_VERSION
     }
+
+@router.post("/get-svg")
+@handle_endpoint_errors("get_svg")
+async def get_svg(buml_file: UploadFile = File(...)):
+    """
+    Convert a B-UML class-diagram file to an auto-laid-out SVG image.
+
+    Pipeline: parse the B-UML to a DomainModel, convert it to the editor JSON
+    model, then delegate rendering to the WME Node server (Apollon, headless),
+    which runs ELK auto-layout and exports SVG. The Node server base URL is read
+    from the WME_NODE_SERVER_URL env var (default http://localhost:8080).
+    """
+    content = await buml_file.read()
+    _validate_upload(buml_file, max_size=MAX_BUML_SIZE, allowed_extensions=ALLOWED_BUML_EXTENSIONS, content=content)
+    _validate_file_content(content, buml_file.filename or "")
+    buml_content = content.decode("utf-8")
+
+    domain_model = parse_buml_content(buml_content)
+    if not domain_model or len(domain_model.types) == 0:
+        raise HTTPException(status_code=400, detail="No class/enumeration types found in the B-UML model")
+
+    diagram_json = class_buml_to_json(domain_model)
+
+    node_server_url = os.environ.get("WME_NODE_SERVER_URL", "http://localhost:8080").rstrip("/")
+    try:
+        render_response = requests.post(
+            f"{node_server_url}/api/svg",
+            json={"model": diagram_json, "autoLayout": True},
+            timeout=30,
+        )
+        render_response.raise_for_status()
+    except requests.RequestException as exc:
+        raise HTTPException(status_code=502, detail=f"SVG render service unavailable: {exc}") from exc
+
+    svg = render_response.json().get("svg")
+    if not svg:
+        raise HTTPException(status_code=502, detail="SVG render service returned no SVG content")
+
+    # Safety net: the renderer sizes the canvas to node/edge geometry but omits
+    # association-end labels, so self-referential associations clip on the left.
+    # Expand the viewport to fit all content before returning.
+    svg = fit_svg_viewbox_to_content(svg)
+
+    return Response(
+        content=svg,
+        media_type="image/svg+xml",
+        headers={"Content-Disposition": 'inline; filename="diagram.svg"'},
+    )
 
 @router.post("/csv-to-domain-model", response_model=DiagramExportResponse)
 @handle_endpoint_errors("csv_to_domain_model_endpoint")

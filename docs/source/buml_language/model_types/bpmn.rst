@@ -7,16 +7,28 @@ BPMN metamodel
 --------------
 
 This metamodel allows the definition of BPMN (Business Process Model and Notation)
-diagrams — the OMG standard for visualising and specifying business processes. A BPMN
+diagrams, the OMG standard for visualising and specifying business processes. A BPMN
 model captures the flow of work across **flow nodes** (tasks, events, gateways)
 connected by **sequence flows**, optionally organised into **pools** (one per
 participant) and **lanes** (sub-partitions of a pool). The metamodel covers the
-WME BPMN editor's element set and follows the BPMN 2.0.2 spec's class structure where
-the two diverge.
+BPMN element set supported by the Web Modeling Editor (WME) and follows the `BPMN
+2.0.2`_ class hierarchy.
 
-The top-level container is ``BPMNModel``. A pool-less diagram has a single
-``Process``; a pool-ful diagram has a ``Collaboration`` whose ``Participant``\ s each
+.. _`BPMN 2.0.2`: https://www.omg.org/spec/BPMN/2.0.2/PDF/
+
+The top-level container is ``BPMNModel``. A diagram without pools has a single
+``Process``; a diagram with pools has a ``Collaboration`` whose ``Participant``\s each
 reference one ``Process``.
+
+.. image:: ../../img/bpmn_mm.png
+  :width: 700
+  :alt: BPMN metamodel
+  :align: center
+
+.. note::
+
+  The classes highlighted in green originate from the :doc:`structural metamodel <structural>`.
+  For the sake of clarity, associations of ``BPMNModel`` and ``Process`` are represented as attributes.
 
 Key concepts
 ^^^^^^^^^^^^
@@ -24,48 +36,56 @@ Key concepts
 - **Flow nodes** (``FlowNode``): everything that can sit in a process and be the
   source or target of a sequence flow. Three concrete branches:
 
-  - ``Activity`` — work to be performed. Concrete subtypes: ``Task``,
-    ``SubProcess``, ``Transaction`` (a ``SubProcess`` subclass per spec), and
-    ``CallActivity``. Tasks carry a ``task_type`` (user, service, send, receive,
-    manual, business-rule, script, default). All activities carry
-    ``loop_characteristics`` (none / loop / parallel / sequential multi-instance).
-  - ``Event`` — something that happens. Concrete subtypes: ``StartEvent``,
+  - ``Activity``: work to be performed. Concrete subtypes: ``Task``,
+    ``SubProcess``, ``Transaction`` (a ``SubProcess`` subclass per BPMN 2.0.2
+    § 10.3), and ``CallActivity``. Tasks carry a ``task_type`` (``USER``,
+    ``SERVICE``, ``SEND``, ``RECEIVE``, ``MANUAL``, ``BUSINESS_RULE``,
+    ``SCRIPT``, ``DEFAULT``). All activities carry ``loop_characteristics``
+    (``NONE`` / ``STANDARD_LOOP`` / ``PARALLEL_MI`` / ``SEQUENTIAL_MI``).
+  - ``Event``: something that happens. Concrete subtypes: ``StartEvent``,
     ``IntermediateEvent``, ``EndEvent``. See the *Event model* subsection below.
-  - ``Gateway`` — branch / merge / join. The kind is set via
-    ``gateway_type`` (exclusive, inclusive, parallel, complex, event-based).
+  - ``Gateway``: branch / merge / join point. The kind is set via
+    ``gateway_type`` (``EXCLUSIVE``, ``INCLUSIVE``, ``PARALLEL``, ``COMPLEX``,
+    ``EVENT_BASED``).
 
-- **Connecting objects** (``BPMNConnectingObject``): four concrete subtypes —
-  ``SequenceFlow`` (orders flow nodes inside a process / sub-process),
-  ``MessageFlow`` (across pool boundaries — endpoints may be message-eligible
-  nodes, i.e. activities / events, *or* whole ``Participant`` pools per
+- **Connecting objects** (``BPMNConnectingObject``): four concrete subtypes:
+  ``SequenceFlow`` (orders flow nodes inside a process or sub-process),
+  ``MessageFlow`` (across pool boundaries; endpoints may be message-eligible
+  nodes (activities or events) or whole ``Participant`` pools per
   BPMN 2.0.2 § 9.3),
-  ``Association`` (links an artifact to anything), ``DataAssociation``
+  ``Association`` (links an artifact to any element), ``DataAssociation``
   (connects exactly one ``DataElement`` to exactly one ``FlowNode``).
-- **Containers**: ``Process`` and ``SubProcess`` hold flow nodes and sequence
-  flows (they expose the same ``flow_nodes`` / ``sequence_flows`` API so they're
-  duck-type compatible). ``Lane`` partitions a process; ``Participant`` is a
-  pool referencing a process; ``Collaboration`` groups participants and the
-  message flows between them.
+- **Containers**: ``Process`` and ``SubProcess`` both hold flow nodes and sequence
+  flows (they expose the same ``flow_nodes`` / ``sequence_flows`` API and are
+  duck-type compatible). ``Lane`` partitions a process; ``Participant`` is a pool
+  referencing a process; ``Collaboration`` groups participants and the message
+  flows between them.
 - **Data & artifacts**: ``DataObject`` (process-scoped), ``DataStore``
-  (model-scoped, per spec § 10.3 a root-level element), ``TextAnnotation``,
-  ``Group``.
+  (model-scoped; per BPMN 2.0.2 § 10.3 a root-level element shared across
+  processes), ``TextAnnotation``, ``Group``.
+
+``BPMNModel`` also exposes three convenience methods: ``all_flow_nodes()`` returns
+every flow node across all processes, ``all_sequence_flows()`` returns every sequence
+flow including those nested inside sub-processes, and ``all_connecting_objects()``
+returns every connecting object across the entire model.
 
 Event model
 ^^^^^^^^^^^
 
-Events split along **two orthogonal axes** rather than the flat string enum the
-WME frontend uses:
+Events split along **two orthogonal axes**:
 
-- ``direction`` (``EventDirection.CATCH`` / ``THROW``) — fixed to ``CATCH`` on
+- ``direction`` (``EventDirection.CATCH`` / ``THROW``):  ``CATCH`` means the event waits to
+  receive a trigger (message arrives, timer fires, signal broadcast from elsewhere); ``THROW``
+  means the event sends a trigger as the flow passes through it. Fixed to ``CATCH`` on
   ``StartEvent`` and ``THROW`` on ``EndEvent``; free on ``IntermediateEvent``.
-- ``event_definition`` (``EventDefinitionType.NONE`` / ``MESSAGE`` / ``TIMER`` /
-  ``SIGNAL`` / ``ESCALATION`` / ``ERROR`` / ``COMPENSATION`` / ``LINK`` /
-  ``CONDITIONAL`` / ``TERMINATE``).
+- ``event_definition`` (``EventDefinitionType``): ``NONE``, ``MESSAGE``,
+  ``TIMER``, ``SIGNAL``, ``ESCALATION``, ``ERROR``, ``COMPENSATION``, ``LINK``,
+  ``CONDITIONAL``, ``TERMINATE``.
 
 The metamodel enforces a legality table of valid ``(class, direction,
 event_definition)`` triples at construction time, so illegal combinations
-(e.g. ``StartEvent(event_definition=TERMINATE)``) fail fast rather than later
-in ``validate()``.
+(e.g. ``StartEvent(event_definition=TERMINATE)``) raise ``ValueError``
+immediately rather than waiting for ``validate()``.
 
 Sequence-flow defaults
 ^^^^^^^^^^^^^^^^^^^^^^
@@ -74,9 +94,9 @@ Sequence-flow defaults
 ``Activity`` or an exclusive / inclusive / complex ``Gateway`` (BPMN 2.0.2
 § 8.3.13). The metamodel guards this in the setter and re-validates in
 ``BPMNModel.validate()``. The derived ``Activity.default_flow`` /
-``Gateway.default_flow`` properties return the single ``is_default=True``
-outgoing flow (or ``None``) — a single source of truth so the two views can't
-desync.
+``Gateway.default_flow`` properties return the single outgoing flow marked
+``is_default=True``, or ``None`` if no default is set. Because the flag and the
+property read from the same underlying field they can never disagree.
 
 Example
 ^^^^^^^
@@ -103,10 +123,10 @@ A pool-less process with a start event, a user task, and an end event:
 Validation
 ^^^^^^^^^^
 
-Call ``BPMNModel.validate()`` to check structural correctness — endpoint
+Call ``BPMNModel.validate()`` to check structural correctness: endpoint
 references resolve, sequence flows stay within a single container, message
 flows cross pool boundaries, default-flow source rules hold, event-definition
-triples are legal, lane membership matches process membership, every
+triples are legal, lane membership matches process membership, and every
 participant references a process in the model:
 
 .. code-block:: python
@@ -114,8 +134,9 @@ participant references a process in the model:
     result = model.validate(raise_exception=False)
     # result = {"success": True/False, "errors": [...], "warnings": [...]}
 
-Validation collects errors (E1–E11) and warnings (W1–W4) rather than throwing
-on the first failure, so a single call reports everything that's wrong.
+Validation collects all errors and warnings in a single pass
+rather than stopping at the first failure, so one call reports everything that
+is wrong.
 
 Round-trip with the Web Modeling Editor
 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
@@ -123,12 +144,19 @@ Round-trip with the Web Modeling Editor
 The BPMN converters live alongside the others under
 ``besser.utilities.web_modeling_editor.backend.services.converters``:
 
-- ``process_bpmn_diagram(json)`` — WME BPMN JSON → ``BPMNModel``.
-- ``bpmn_object_to_json(model)`` — ``BPMNModel`` → WME BPMN JSON.
-- ``bpmn_to_json(content)`` — BUML ``.py`` source string → WME BPMN JSON
-  (execs the source and delegates to ``bpmn_object_to_json``).
-- ``bpmn_model_to_code(model)`` — ``BPMNModel`` → executable Python that
-  reconstructs the model when ``exec()``'d.
+``process_bpmn_diagram(json)``
+    WME BPMN JSON → ``BPMNModel``.
+
+``bpmn_object_to_json(model)``
+    ``BPMNModel`` → WME BPMN JSON.
+
+``bpmn_buml_to_json(content)``
+    B-UML ``.py`` source string → WME BPMN JSON (executes the source and
+    delegates to ``bpmn_object_to_json``).
+
+``bpmn_model_to_code(model)``
+    ``BPMNModel`` → executable Python that reconstructs the model when
+    ``exec()``'d.
 
 Because BPMN names can be empty, whitespace, or repeated, the metamodel
 identifies elements **by object** (no ``__eq__`` / ``__hash__`` overrides);

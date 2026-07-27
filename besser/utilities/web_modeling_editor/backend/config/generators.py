@@ -20,8 +20,9 @@ from besser.generators.rest_api import RESTAPIGenerator
 from besser.generators.react import ReactGenerator
 from besser.generators.flutter import FlutterGenerator
 from besser.generators.terraform import TerraformGenerator
+from besser.generators.testgen import TestCaseGenerator
 from besser.generators.bpmn import BPMNGenerator
-from besser.generators.docker_compose import DockerComposeGenerator
+from besser.utilities.web_modeling_editor.backend.constants.constants import BPMN_DIAGRAM_TYPE
 try:
     from besser.generators.nn.pytorch.pytorch_code_generator import PytorchGenerator
 except ImportError:
@@ -67,6 +68,14 @@ SUPPORTED_GENERATORS: Dict[str, GeneratorInfo] = {
     ),
     "pydantic": GeneratorInfo(
         generator_class=PydanticGenerator,
+        output_type="file",
+        file_extension=".py",
+        category="object_oriented",
+        requires_class_diagram=True
+    ),
+
+    "test_case": GeneratorInfo(
+        generator_class=TestCaseGenerator,
         output_type="file",
         file_extension=".py",
         category="object_oriented",
@@ -208,17 +217,7 @@ SUPPORTED_GENERATORS: Dict[str, GeneratorInfo] = {
         file_extension=".bpmn",
         category="business_process",
         requires_class_diagram=False,
-        required_diagram_type="BPMNDiagram",
-    ),
-
-    # Docker Compose generator (UML DeploymentDiagram → docker-compose.yml)
-    "docker_compose": GeneratorInfo(
-        generator_class=DockerComposeGenerator,
-        output_type="file",
-        file_extension=".yml",
-        category="deployment",
-        requires_class_diagram=False,
-        required_diagram_type="DeploymentDiagram",
+        required_diagram_type=BPMN_DIAGRAM_TYPE,
     ),
 }
 
@@ -274,9 +273,10 @@ def get_filename_for_generator(generator_type: str, base_name: str = "output") -
     info = get_generator_info(generator_type)
     if not info:
         return f"{base_name}.txt"
-
     if generator_type == "python":
         return "classes.py"
+    elif generator_type == "test_case":
+        return "test_hypothesis.py"
     elif generator_type == "pydantic":
         return "pydantic_classes.py"
     elif generator_type == "sqlalchemy":
@@ -305,8 +305,6 @@ def get_filename_for_generator(generator_type: str, base_name: str = "output") -
         return "tf_nn.py"
     elif generator_type == "bpmn":
         return "bpmn_diagram.bpmn"
-    elif generator_type == "docker_compose":
-        return "docker-compose.yml"
     else:
         return f"{generator_type}_output{info.file_extension}"
 

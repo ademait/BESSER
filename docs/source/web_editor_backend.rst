@@ -103,8 +103,14 @@ the owner agent, and BPMN sequence-flow ids are used to route A2A messages into
 the correct governed merge.
 
 
-Component and Deployment Diagrams
-^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+BPMN Diagrams
+^^^^^^^^^^^^^
+
+The backend handles ``BPMN`` as a self-contained diagram type backed by the
+:doc:`BPMN metamodel <buml_language/model_types/bpmn>`. ``/export-buml``
+converts a BPMN diagram JSON to an executable Python BUML file;
+``/get-json-model`` reads it back; ``/validate-diagram`` runs the metamodel
+``validate()``.
 
 The backend handles ``ComponentDiagram`` and ``DeploymentDiagram`` as the
 whole-swarm structural and runtime-allocation views backing the

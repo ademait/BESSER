@@ -2,17 +2,16 @@
 
 Generates Python code from a ``BPMNModel`` metamodel instance. The emitted code can be
 ``exec()``'d to reconstruct an identical model — that is the contract
-``services/converters/buml_to_json/bpmn_diagram_converter.bpmn_to_json`` relies on.
+``services/converters/buml_to_json/bpmn_diagram_converter.bpmn_buml_to_json`` relies on.
 
 Build style — option (b) per ``.claude/bpmn/04-bpmn-code-builder-guide.md``: empty
 containers first, then ``add_*`` calls. Mirrors ``state_machine_builder.py`` so the
 emitted modules read the same way as the existing diagram-type builders.
 """
 
+from typing import Optional
+
 from besser.BUML.metamodel.bpmn import (
-    AgenticGateway,
-    AgenticLane,
-    AgenticTask,
     Association,
     BPMNModel,
     CallActivity,
@@ -30,6 +29,7 @@ from besser.BUML.metamodel.bpmn import (
     Transaction,
 )
 from besser.utilities.buml_code_builder.common import (
+    _comment_safe,
     _escape_python_string,
     safe_var_name,
 )
@@ -98,22 +98,7 @@ def _emit_flow_node(node, container_var: str, dispenser: _NameDispenser,
     """
     var = dispenser.name_for(node)
 
-    if isinstance(node, AgenticTask):
-        # AgenticTask is a Task subclass — emit it before the Task branch.
-        needed.update({
-            "AgenticTask", "TaskType", "LoopCharacteristics", "ReflectionMode",
-        })
-        ref_kwarg = ""
-        if node.agent_diagram_ref is not None:
-            ref_kwarg = f", agent_diagram_ref={_quoted(node.agent_diagram_ref)}"
-        body.append(
-            f"{var} = AgenticTask(name={_quoted(node.name)}, "
-            f"task_type=TaskType.{node.task_type.name}, "
-            f"loop_characteristics=LoopCharacteristics.{node.loop_characteristics.name}, "
-            f"reflection_mode=ReflectionMode.{node.reflection_mode.name}, "
-            f"trust_score={node.trust_score}{ref_kwarg})"
-        )
-    elif isinstance(node, Task):
+    if isinstance(node, Task):
         needed.update({"Task", "TaskType", "LoopCharacteristics"})
         body.append(
             f"{var} = Task(name={_quoted(node.name)}, "
@@ -159,22 +144,6 @@ def _emit_flow_node(node, container_var: str, dispenser: _NameDispenser,
             f"{var} = EndEvent(name={_quoted(node.name)}, "
             f"direction=EventDirection.{node.direction.name}, "
             f"event_definition=EventDefinitionType.{node.event_definition.name})"
-        )
-    elif isinstance(node, AgenticGateway):
-        # AgenticGateway is a Gateway subclass — emit it before the Gateway branch.
-        needed.update({
-            "AgenticGateway", "GatewayType", "GatewayRole",
-        })
-        # _quoted escapes newlines, so a multi-line governance DSL stays a valid
-        # single-line literal that exec's back to the original string.
-        gov_kwarg = ""
-        if node.governance_dsl is not None:
-            gov_kwarg = f", governance_dsl={_quoted(node.governance_dsl)}"
-        body.append(
-            f"{var} = AgenticGateway(name={_quoted(node.name)}, "
-            f"gateway_type=GatewayType.{node.gateway_type.name}, "
-            f"gateway_role=GatewayRole.{node.gateway_role.name}, "
-            f"trust_score={node.trust_score}{gov_kwarg})"
         )
     elif isinstance(node, Gateway):
         needed.update({"Gateway", "GatewayType"})
@@ -228,22 +197,8 @@ def _emit_lane(lane, process_var: str, dispenser: _NameDispenser,
                body: list, needed: set) -> str:
     """Emit a Lane constructor + ``add_lane`` + an ``add_flow_node`` per member."""
     var = dispenser.name_for(lane)
-    if isinstance(lane, AgenticLane):
-        needed.update({"AgenticLane", "AgentRole"})
-        ref_kwarg = ""
-        if lane.agent_diagram_ref is not None:
-            ref_kwarg = f", agent_diagram_ref={_quoted(lane.agent_diagram_ref)}"
-        mult_kwarg = ""
-        if lane.multiplicity > 1:
-            mult_kwarg = f", multiplicity={lane.multiplicity}"
-        body.append(
-            f"{var} = AgenticLane(name={_quoted(lane.name)}, "
-            f"role=AgentRole.{lane.role.name}, "
-            f"trust_score={lane.trust_score}{mult_kwarg}{ref_kwarg})"
-        )
-    else:
-        needed.add("Lane")
-        body.append(f"{var} = Lane(name={_quoted(lane.name)})")
+    needed.add("Lane")
+    body.append(f"{var} = Lane(name={_quoted(lane.name)})")
     _emit_layout_if_present(lane, var, body)
     body.append(f"{process_var}.add_lane({var})")
     for member in sort_by_timestamp(lane.flow_nodes):
@@ -262,8 +217,8 @@ def _emit_sequence_flow(flow: SequenceFlow, container_var: str,
         parts.append(f"name={_quoted(flow.name)}")
     if flow.is_default:
         parts.append("is_default=True")
-    body.append(f"{container_var}.add_sequence_flow(SequenceFlow({', '.join(parts)}))")
-    _emit_flow_layout_if_present(flow, body)
+    ctor = f"SequenceFlow({', '.join(parts)})"
+    _emit_connecting_object(flow, ctor, container_var, "add_sequence_flow", dispenser, body)
 
 
 def _emit_association(flow: Association, process_var: str,
@@ -274,8 +229,8 @@ def _emit_association(flow: Association, process_var: str,
     parts = [f"source={src}", f"target={tgt}"]
     if flow.name:
         parts.append(f"name={_quoted(flow.name)}")
-    body.append(f"{process_var}.add_association(Association({', '.join(parts)}))")
-    _emit_flow_layout_if_present(flow, body)
+    ctor = f"Association({', '.join(parts)})"
+    _emit_connecting_object(flow, ctor, process_var, "add_association", dispenser, body)
 
 
 def _emit_data_association(flow: DataAssociation, process_var: str,
@@ -286,10 +241,8 @@ def _emit_data_association(flow: DataAssociation, process_var: str,
     parts = [f"source={src}", f"target={tgt}"]
     if flow.name:
         parts.append(f"name={_quoted(flow.name)}")
-    body.append(
-        f"{process_var}.add_data_association(DataAssociation({', '.join(parts)}))"
-    )
-    _emit_flow_layout_if_present(flow, body)
+    ctor = f"DataAssociation({', '.join(parts)})"
+    _emit_connecting_object(flow, ctor, process_var, "add_data_association", dispenser, body)
 
 
 def _emit_message_flow(flow: MessageFlow, dispenser: _NameDispenser,
@@ -300,17 +253,27 @@ def _emit_message_flow(flow: MessageFlow, dispenser: _NameDispenser,
     if flow.name:
         parts.append(f"name={_quoted(flow.name)}")
     needed.add("MessageFlow")
-    body.append(f"collaboration.add_message_flow(MessageFlow({', '.join(parts)}))")
-    _emit_flow_layout_if_present(flow, body)
+    ctor = f"MessageFlow({', '.join(parts)})"
+    _emit_connecting_object(flow, ctor, "collaboration", "add_message_flow", dispenser, body)
 
 
-def _emit_flow_layout_if_present(flow, body: list) -> None:
-    """Connecting objects can't carry a follow-up ``.layout =`` line directly because
-    they're constructed inline inside the ``add_*`` call. The layout is intentionally
-    not preserved on flows in the .py round-trip (the converter recomputes it from
-    bounds). Hook present in case we ever need to emit it under a temporary variable.
+def _emit_connecting_object(flow, ctor_expr: str, target_var: str, add_method: str,
+                            dispenser: _NameDispenser, body: list) -> None:
+    """Emit a connecting object's construction and its ``add_*`` call.
+
+    When the flow carries a non-empty ``layout`` it is materialised under a temporary
+    variable so the layout can be attached before the ``add_*`` call — mirroring
+    ``_emit_layout_if_present`` for nodes, which keeps the flow's WME ids/waypoints on
+    the ``.py`` round-trip. Otherwise the object is constructed inline inside the
+    ``add_*`` call to keep the emitted code compact.
     """
-    return  # no-op by design — see docstring
+    if getattr(flow, "layout", None):
+        var = dispenser.name_for(flow)
+        body.append(f"{var} = {ctor_expr}")
+        body.append(f"{var}.layout = {repr(flow.layout)}")
+        body.append(f"{target_var}.{add_method}({var})")
+    else:
+        body.append(f"{target_var}.{add_method}({ctor_expr})")
 
 
 # ---------------------------------------------------------------------------
@@ -326,7 +289,7 @@ def _emit_container(container, container_var: str, dispenser: _NameDispenser,
         if isinstance(node, SubProcess):
             sub_var = dispenser.name_for(node)
             body.append("")
-            body.append(f"# Sub-process contents: {node.name or '(unnamed)'}")
+            body.append(f"# Sub-process contents: {_comment_safe(node.name) or '(unnamed)'}")
             _emit_container(node, sub_var, dispenser, body, needed)
 
     if container.sequence_flows:
@@ -343,7 +306,7 @@ def _emit_container(container, container_var: str, dispenser: _NameDispenser,
 _BANNER = "####################\n#    BPMN MODEL    #\n####################"
 
 
-def bpmn_model_to_code(model: BPMNModel, file_path: str = None,
+def bpmn_model_to_code(model: BPMNModel, file_path: Optional[str] = None,
                        model_var_name: str = "bpmn_model") -> str:
     """Generate Python code that reconstructs ``model`` when ``exec()``'d.
 
@@ -369,7 +332,7 @@ def bpmn_model_to_code(model: BPMNModel, file_path: str = None,
         needed.add("Process")
         var = dispenser.name_for(process)
         process_vars[process] = var
-        body.append(f"# --- Process: {process.name or '(unnamed)'} ---")
+        body.append(f"# --- Process: {_comment_safe(process.name) or '(unnamed)'} ---")
         body.append(f"{var} = Process(name={_quoted(process.name)})")
         _emit_layout_if_present(process, var, body)
         body.append(f"{model_var_name}.add_process({var})")
@@ -381,39 +344,39 @@ def bpmn_model_to_code(model: BPMNModel, file_path: str = None,
 
         # 4a — flow nodes (recursing into sub-processes) + sequence flows
         if process.flow_nodes:
-            body.append(f"# Flow nodes in: {process.name or '(unnamed)'}")
+            body.append(f"# Flow nodes in: {_comment_safe(process.name) or '(unnamed)'}")
             _emit_container(process, var, dispenser, body, needed)
             body.append("")
 
         # 4b — artifacts (annotations / groups)
         if process.artifacts:
-            body.append(f"# Artifacts in: {process.name or '(unnamed)'}")
+            body.append(f"# Artifacts in: {_comment_safe(process.name) or '(unnamed)'}")
             for artifact in sort_by_timestamp(process.artifacts):
                 _emit_artifact(artifact, var, dispenser, body, needed)
             body.append("")
 
         # 4c — data objects
         if process.data_objects:
-            body.append(f"# Data objects in: {process.name or '(unnamed)'}")
+            body.append(f"# Data objects in: {_comment_safe(process.name) or '(unnamed)'}")
             for data_object in sort_by_timestamp(process.data_objects):
                 _emit_data_object(data_object, var, dispenser, body, needed)
             body.append("")
 
         # 4d — lanes (after flow nodes so members are already emitted)
         if process.lanes:
-            body.append(f"# Lanes in: {process.name or '(unnamed)'}")
+            body.append(f"# Lanes in: {_comment_safe(process.name) or '(unnamed)'}")
             for lane in sort_by_timestamp(process.lanes):
                 _emit_lane(lane, var, dispenser, body, needed)
             body.append("")
 
         # 4e — associations + data associations
         if process.associations:
-            body.append(f"# Associations in: {process.name or '(unnamed)'}")
+            body.append(f"# Associations in: {_comment_safe(process.name) or '(unnamed)'}")
             for assoc in sort_by_timestamp(process.associations):
                 _emit_association(assoc, var, dispenser, body, needed)
             body.append("")
         if process.data_associations:
-            body.append(f"# Data associations in: {process.name or '(unnamed)'}")
+            body.append(f"# Data associations in: {_comment_safe(process.name) or '(unnamed)'}")
             for da in sort_by_timestamp(process.data_associations):
                 _emit_data_association(da, var, dispenser, body, needed)
             body.append("")

@@ -4,7 +4,7 @@ Two entry points:
 
 * ``bpmn_object_to_json(model: BPMNModel) -> dict`` — converts a metamodel object
   directly. Mirror of ``json_to_buml.bpmn_diagram_processor.process_bpmn_diagram``.
-* ``bpmn_to_json(content: str) -> dict`` — execs a BPMN BUML ``.py`` source string
+* ``bpmn_buml_to_json(content: str) -> dict`` — execs a BPMN BUML ``.py`` source string
   in a fresh namespace, finds the resulting ``BPMNModel``, and delegates to
   ``bpmn_object_to_json``. The ``.py`` files emitted by
   ``besser.utilities.buml_code_builder.bpmn_model_builder.bpmn_model_to_code`` are
@@ -28,21 +28,24 @@ import uuid
 
 from besser.BUML.metamodel.bpmn import (
     Activity,
-    AgenticGateway,
-    AgenticLane,
-    AgenticTask,
     Association,
     BPMNConnectingObject,
     BPMNModel,
+    CallActivity,
+    Collaboration,
     DataAssociation,
     DataObject,
     DataStore,
     EndEvent,
     Event,
+    EventDefinitionType,
+    EventDirection,
     Gateway,
+    GatewayType,
     Group,
     IntermediateEvent,
     Lane,
+    LoopCharacteristics,
     MessageFlow,
     Participant,
     Process,
@@ -50,6 +53,7 @@ from besser.BUML.metamodel.bpmn import (
     StartEvent,
     SubProcess,
     Task,
+    TaskType,
     TextAnnotation,
     Transaction,
 )
@@ -77,24 +81,22 @@ logger = logging.getLogger(__name__)
 # ---------------------------------------------------------------------------
 
 # Reverse of the processor's dispatch — every concrete metamodel type that maps to a
-# distinct WME ``elements[id]["type"]`` string.
+# distinct WME ``elements[id]["type"]`` string. Lookup is by exact ``type(obj)`` (see
+# ``_wme_type_for``), so entry order is irrelevant even for subclasses like Transaction
+# (a SubProcess subclass); ``CallActivity`` is resolved separately in ``_wme_type_for``.
 _TYPE_FOR_CLASS = {
     Task: "BPMNTask",
-    AgenticTask: "BPMNTask",          # SEAA'25 subclass: same WME element type
-    Transaction: "BPMNTransaction",   # checked before SubProcess (subclass)
+    Transaction: "BPMNTransaction",
     SubProcess: "BPMNSubprocess",
-    "CallActivity": "BPMNCallActivity",  # resolved below
     StartEvent: "BPMNStartEvent",
     IntermediateEvent: "BPMNIntermediateEvent",
     EndEvent: "BPMNEndEvent",
     Gateway: "BPMNGateway",
-    AgenticGateway: "BPMNGateway",    # SEAA'25 subclass: same WME element type
     DataObject: "BPMNDataObject",
     DataStore: "BPMNDataStore",
     TextAnnotation: "BPMNAnnotation",
     Group: "BPMNGroup",
     Lane: "BPMNSwimlane",
-    AgenticLane: "BPMNSwimlane",      # SEAA'25 subclass: same WME element type
     Participant: "BPMNPool",
 }
 
@@ -124,7 +126,7 @@ _FLOW_TYPE_FOR_CLASS = {
 }
 
 
-# WME's BPMNTask / BPMNGateway / BPMNSwimlane always serialise these SEAA'25
+# WME's BPMNTask / BPMNGateway / BPMNSwimlane always serialise these agentic
 # fields with hard defaults when the element is not agentic. Mirror exactly so
 # BESSER-emitted JSON matches WME's own JSON byte-for-byte on non-agentic
 # elements. The values are taken from WME's `dev/bpmn`
@@ -349,43 +351,6 @@ def _emit_node(obj, owner_id, id_for, grid: "_GridLayout") -> dict:
     if isinstance(obj, Gateway):
         entry["gatewayType"] = obj.gateway_type.value
 
-    # SEAA'25 agentic fields — every Task / Gateway / Lane entry carries
-    # them in WME's JSON shape (defaulted when the element is not agentic).
-    if isinstance(obj, Task):
-        entry.update(_WME_TASK_DEFAULTS)
-        if isinstance(obj, AgenticTask):
-            entry["isAgentic"] = True
-            entry["reflectionMode"] = obj.reflection_mode.value
-            entry["trustScore"] = obj.trust_score
-            # WME guide 11: emit agentDiagramRef only when set (optional field;
-            # WME's exporter drops it when undefined). Canonical task carrier.
-            if obj.agent_diagram_ref is not None:
-                entry["agentDiagramRef"] = obj.agent_diagram_ref
-    if isinstance(obj, Gateway):
-        entry.update(_WME_GATEWAY_DEFAULTS)
-        if isinstance(obj, AgenticGateway):
-            entry["isAgentic"] = True
-            entry["gatewayRole"] = obj.gateway_role.value
-            entry["trustScore"] = obj.trust_score
-            # Governance DSL: emit only when set
-            # (WME's exporter drops it when undefined). Merging-gateway concept.
-            if obj.governance_dsl is not None:
-                entry["governanceDsl"] = obj.governance_dsl
-    if isinstance(obj, Lane):
-        entry.update(_WME_LANE_DEFAULTS)
-        if isinstance(obj, AgenticLane):
-            entry["isAgentic"] = True
-            entry["role"] = obj.role.value
-            entry["trustScore"] = obj.trust_score
-            # WME 3c: swarm size; always emitted (WME serialises it on every
-            # lane, default 1).
-            entry["multiplicity"] = obj.multiplicity
-            # WME 08: emit agentDiagramRef only when set (optional field;
-            # WME's exporter drops it when undefined). Lane-only — never on
-            # tasks / gateways.
-            if obj.agent_diagram_ref is not None:
-                entry["agentDiagramRef"] = obj.agent_diagram_ref
-
     return entry
 
 
@@ -446,9 +411,6 @@ def _emit_flow(flow: BPMNConnectingObject, relationships: dict,
     }
     if isinstance(flow, SequenceFlow):
         entry["isDefault"] = flow.is_default
-
-    # WME's BPMNFlow always carries these fields; emit WME defaults.
-    entry.update(_WME_FLOW_AGENTIC_DEFAULTS)
 
     relationships[id_for(flow)] = entry
 
@@ -538,10 +500,10 @@ class _GridLayout:
 
 
 # ---------------------------------------------------------------------------
-# bpmn_to_json — BUML .py source string → WME JSON
+# bpmn_buml_to_json — BUML .py source string → WME JSON
 # ---------------------------------------------------------------------------
 
-def bpmn_to_json(content: str) -> dict:
+def bpmn_buml_to_json(content: str) -> dict:
     """Convert a BPMN BUML ``.py`` source string into a WME BPMN diagram JSON dict.
 
     Execs ``content`` in a fresh namespace, locates the resulting ``BPMNModel``, and
@@ -559,13 +521,69 @@ def bpmn_to_json(content: str) -> dict:
         ConversionError: if the source fails to parse / execute, or if no
             ``BPMNModel`` instance is produced.
     """
-    namespace: dict = {}
+    safe_globals = {
+        "__name__": "besser_buml_import",
+        "__builtins__": {
+            "set": set, "list": list, "dict": dict, "tuple": tuple,
+            "str": str, "int": int, "float": float, "bool": bool,
+            "len": len, "range": range,
+            "True": True, "False": False, "None": None,
+            "print": lambda *a, **kw: None,
+        },
+        "BPMNModel": BPMNModel,
+        "Process": Process,
+        "Collaboration": Collaboration,
+        "Participant": Participant,
+        "Task": Task,
+        "TaskType": TaskType,
+        "LoopCharacteristics": LoopCharacteristics,
+        "SubProcess": SubProcess,
+        "Transaction": Transaction,
+        "CallActivity": CallActivity,
+        "StartEvent": StartEvent,
+        "IntermediateEvent": IntermediateEvent,
+        "EndEvent": EndEvent,
+        "EventDirection": EventDirection,
+        "EventDefinitionType": EventDefinitionType,
+        "Gateway": Gateway,
+        "GatewayType": GatewayType,
+        "SequenceFlow": SequenceFlow,
+        "MessageFlow": MessageFlow,
+        "Association": Association,
+        "DataAssociation": DataAssociation,
+        "DataObject": DataObject,
+        "DataStore": DataStore,
+        "Lane": Lane,
+        "Group": Group,
+        "TextAnnotation": TextAnnotation,
+        "set": set,
+        "Project": lambda *args, **kwargs: None,
+    }
+
+    cleaned_lines = []
+    in_import_block = False
+    for line in content.splitlines():
+        stripped = line.lstrip()
+        if in_import_block:
+            if ")" in line:
+                in_import_block = False
+            continue
+        if stripped.startswith(("import ", "from ")):
+            if "(" in line and ")" not in line:
+                in_import_block = True
+            continue
+        if any(gen in line for gen in ["Generator(", ".generate("]):
+            continue
+        cleaned_lines.append(line)
+    cleaned_content = "\n".join(cleaned_lines)
+
+    local_vars: dict = {}
     try:
-        exec(content, namespace)
+        exec(cleaned_content, safe_globals, local_vars)
     except (SyntaxError, NameError, TypeError, ValueError) as exc:
         raise ConversionError(f"BPMN BUML file failed to execute: {exc}") from exc
 
-    model = _find_bpmn_model(namespace)
+    model = _find_bpmn_model(local_vars)
     if model is None:
         raise ConversionError(
             "BPMN BUML file produced no BPMNModel — expected a top-level variable "
