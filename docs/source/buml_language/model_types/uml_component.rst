@@ -44,14 +44,14 @@ Base metamodel
 Agentic extension
 -----------------
 
-The agentic extension adds the collaborative-agent-swarm profile used to
-model multi-agent systems. It is a pure addition — the base module is
-untouched and remains valid vanilla UML 2.5 on its own.
+The agentic extension adds the collaborative-agent profile used to model the
+whole-swarm structure of an AgenticSwarm project. It is a pure addition -- the
+base module is untouched and remains valid vanilla UML 2.5 on its own.
 
 * ``AgenticComponent`` — a ``Component`` that is an *agent*. Carries an
   ``agent_category`` (``AgentCategory``: ``NONE`` / ``SOLUTION`` /
   ``SUPERVISION`` / ``CONSENSUS`` / ``COLLABORATION``) and
-  ``process_model_refs`` — cross-diagram references to the BPMN processes the
+  ``process_model_refs`` -- cross-diagram references to the BPMN processes the
   agent participates in.
 * ``Skill`` / ``Tool`` — agent capabilities (plain ``Component``
   subclasses).
@@ -93,7 +93,7 @@ Example
     has = AgenticEdge(advisor, search, kind=AgenticEdgeKind.HAS)
 
     model = AgenticComponentModel(
-        "swarm", components={advisor, search}, relationships={has},
+        "agentic_swarm", components={advisor, search}, relationships={has},
     )
     result = model.validate()  # {"success": ..., "errors": [...], "warnings": [...]}
 

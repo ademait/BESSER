@@ -2,11 +2,13 @@ Docker Compose Generator
 ========================
 
 The Docker Compose generator converts a UML :doc:`Deployment model
-<../buml_language/model_types/deployment>` into a ``docker-compose.yml`` file
-ready for ``docker compose up``.  It is the first generator in the UML
-Deployment track and the capstone of the swarm-multiplicity story: the instance
-count authored on a BPMN agentic lane flows through the Deployment model and
-becomes a real ``deploy.replicas: N`` in the generated Compose file.
+<../buml_language/model_types/uml_deployment>` into Docker Compose output ready
+for ``docker compose up``. For a single Deployment diagram it writes a
+``docker-compose.yml`` file. When invoked from a full project, it returns a ZIP
+containing ``docker-compose.yml`` plus any baked agent build contexts. It is the
+runtime handoff for the AgenticSwarm path: the instance count authored on a
+BPMN agentic lane flows through the Deployment model and becomes a real
+``deploy.replicas: N`` in the generated Compose file.
 
 Mapping — UML Deployment → docker-compose.yml
 ----------------------------------------------
@@ -26,7 +28,9 @@ Mapping — UML Deployment → docker-compose.yml
    * - ``Artifact`` (locality ``HYBRID``)
      - Service entry with ``image: <name>:latest  # hybrid``
    * - ``Artifact.manifests``
-     - ``# manifests: <ids>`` comment on the service (v1 — not resolved)
+     - ``# manifests: <ids>`` comment on the service
+   * - ``Artifact.agent_model_ref``
+     - Project-level agent resolver key used to bake BAF build contexts
    * - ``Node``
      - Named network under ``networks:``
    * - ``DeploymentRelation`` (Artifact → Node)
@@ -62,7 +66,7 @@ Basic Usage
     dr2 = DeploymentRelation(gateway, node)
 
     model = DeploymentModel(
-        "swarm",
+        "agentic_swarm",
         nodes={node},
         artifacts={advisor, gateway},
         relationships={dr, dr2},
@@ -97,12 +101,12 @@ WME Generator Key
 When using the online editor, select ``docker_compose`` as the generator type
 for a ``DeploymentDiagram``.
 
-Agentic swarm baking
+AgenticSwarm baking
 --------------------
 
 When the generator is invoked through the ``/generate-output-from-project``
 endpoint (i.e. as part of a full project that includes one or more
-``AgentDiagram`` s), each LOCAL ``Artifact`` whose ``agentModelRef`` field
+``AgentDiagram`` entries), each LOCAL ``Artifact`` whose ``agentModelRef`` field
 resolves to an ``AgentDiagram`` in the project receives a fully baked build
 context: ``<svc>/agent.py`` + ``<svc>/config.yaml`` (via the BAF generator) and
 a ``<svc>/Dockerfile`` that installs ``besser-agentic-framework[all]`` and runs
@@ -119,20 +123,30 @@ Tag-driven A2A wiring
 ~~~~~~~~~~~~~~~~~~~~~~~
 
 When the Web Modeling Editor annotates the Agent diagram with explicit
-agent-to-agent (A2A) tags, the bake uses them in preference to the legacy
-``to_<peer>`` / ``from_<peer>`` state-name convention.  The tags ride fields the
-core converter otherwise drops — ``a2a:out`` lines on an ``AgentState``
-description (one per downstream peer) and ``a2a:in`` on a ``when_intent_matched``
-transition name — and are parsed by a standalone annotation pass that stashes the
-result on the agent (``agent._a2a``) without touching the converter.  Each
-out-edge carries a ``kind`` (``delegates``, ``supervises``, ``revises``,
-``collaborates``) that shapes how the requester frames the task for that peer and
-how the reply is folded back, and an ``order`` that sequences multi-peer sends.
-A peer with no ``kind`` is a plain channel — the task is passed through unframed,
-exactly as the convention-based fan-out behaves today.  The transport is
-unchanged in all cases (the BAF ``POST /a2a`` JSON-RPC platform); ``kind`` and
-``order`` affect only the generated message wording and call sequence.  Multi-round
-review loops are expressed on the BPMN/WME side as additional edges (one
-``a2a:out``/``a2a:in`` pair per round), so the generated code stays one
-request/response per edge.  When a diagram carries no ``a2a:`` tag the bake falls
-back to the convention and the output is byte-identical to before.
+agent-to-agent (A2A) tags, the bake uses those tags as the primary wiring
+contract. ``a2a:out`` lines on an ``AgentState`` description identify ordered
+outbound sends, and ``a2a:in`` on a ``when_intent_matched`` transition name
+identifies inbound handlers. Each out-edge can carry a ``kind``
+(``delegates``, ``supervises``, ``revises``, ``collaborates``) that shapes how
+the requester frames the task for that peer and how the reply is folded back;
+``order`` sequences multi-peer sends. A peer with no ``kind`` is a plain
+channel. The transport is unchanged in all cases (the BAF ``POST /a2a``
+JSON-RPC platform); ``kind`` and ``order`` affect only the generated message
+wording and call sequence. Multi-round review loops are expressed as additional
+modeled edges (one ``a2a:out``/``a2a:in`` pair per round), so the generated code
+stays one request/response per edge. For older diagrams with no ``a2a:`` tags,
+the bake can still fall back to the previous ``to_<peer>`` / ``from_<peer>``
+state-name convention.
+
+Governed merge runtime
+~~~~~~~~~~~~~~~~~~~~~~
+
+When the project also contains Agentic BPMN, the deployment path attaches
+``governanceDsl`` from each governed merging gateway to the Agent diagram linked
+from the owning lane. A2A ``flow`` tags bind producer messages to the gateway
+that receives them, so a merge owner can dispatch each incoming candidate to the
+correct governed merge state. Voting policies bake BESSER's deterministic tally
+engine into the owner agent once and reuse it for each governed merge; non-voting
+policies use the generated governance instruction directly. If the policy
+requires human input, the generated runtime pauses the merge and surfaces the
+candidate slate for the human-facing entry agent to complete.

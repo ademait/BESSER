@@ -25,9 +25,10 @@ Metamodel
   ``GENERIC`` / ``DEVICE`` / ``EXECUTION_ENVIRONMENT``) and a ``locality``.
   Nodes can nest other nodes and artifacts (e.g. an execution environment
   inside a device).
-* ``Artifact`` — the deployable unit. Carries a ``locality`` and
-  ``manifests`` — a list of ``Component`` identifiers (a cross-diagram
-  reference into a :doc:`UML Component model <uml_component>`).
+* ``Artifact`` -- the deployable unit. Carries a ``locality``,
+  ``manifests`` -- a list of ``Component`` identifiers (a cross-diagram
+  reference into a :doc:`UML Component model <uml_component>`) -- and optional
+  ``agent_model_ref``, the id of the Agent diagram this artifact deploys.
 * ``Interface`` — a provided / required interface on a node or artifact.
 * Relationships:
 
@@ -49,6 +50,12 @@ profile addition shared with the
 :doc:`UML Component model <uml_component>`; see
 :ref:`uml-component-locality`.
 
+When a Deployment diagram is generated from an AgenticSwarm project, WME can
+stamp ``agentModelRef`` on an artifact. The JSON converter stores that value as
+``Artifact.agent_model_ref``. Project-level deployment generators use it to
+resolve the artifact back to the Agent diagram and bake the generated agent
+runtime into the deployment output.
+
 Example
 -------
 
@@ -60,7 +67,9 @@ Example
     )
 
     runtime = Node("AgentRuntime", kind=NodeKind.EXECUTION_ENVIRONMENT)
-    artifact = Artifact("advisor.whl", manifests=["component-uuid-1"])
+    artifact = Artifact(
+        "advisor", manifests=["component-uuid-1"], agent_model_ref="agent-diagram-uuid-1"
+    )
     deployed = DeploymentRelation(artifact, runtime, multiplicity=Multiplicity(1, 3))
 
     model = DeploymentModel(

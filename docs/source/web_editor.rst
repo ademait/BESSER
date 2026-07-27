@@ -151,49 +151,57 @@ XML import / export). The backend converters
 JSON ↔ B-UML side, and ``bpmn_model_to_code`` / ``bpmn_to_json`` close the
 round-trip through executable BUML ``.py`` files.
 
-The editor also supports the :ref:`bpmn-agentic-extension` from the
-SEAA'25 paper. ``BPMNTask`` / ``BPMNGateway`` / ``BPMNSwimlane`` elements
-carry an ``isAgentic`` flag plus the SEAA fields when toggled on:
-``reflectionMode`` and ``trustScore`` on tasks; ``gatewayRole``,
-``collaborationMode``, ``mergingStrategy``, and ``trustScore`` on
-gateways (the gateway-type picker hides ``exclusive`` / ``complex`` /
-``event-based`` when ``isAgentic`` is true, matching paper § 4.3); and
-``role`` plus ``trustScore`` on swimlanes. The backend converters
-construct the corresponding ``AgenticTask`` / ``AgenticGateway`` /
-``AgenticLane`` subclasses on import and re-emit the WME-shape JSON
-plus the BPMN-XML ``<agentic:agentic .../>`` extension elements on
-export.
+The editor also supports BESSER's :ref:`bpmn-agentic-extension`. Agentic BPMN
+is the process view within an agentic swarm: lanes identify participating
+agent roles, tasks describe the work inside the process, and merging gateways
+can carry Governance DSL for governed merge points.
 
-.. note::
-   The frontend BPMN editor currently lives on the ``dev/bpmn`` branch of the
-   `BESSER-WEB-MODELING-EDITOR <https://github.com/BESSER-PEARL/BESSER-WEB-MODELING-EDITOR>`_
-   repository and is being merged into ``main``. That branch carries both
-   the vanilla BPMN editor and the SEAA'25 agentic extension. The backend
-   metamodel, converters, code builder, and BPMN-XML generator (with the
-   agentic ``<extensionElements>`` emission) are available on the BESSER
-   ``feature/bpmn`` and ``feature/seaa25-bpmn-extension`` branches
-   respectively.
+Agentic BPMN JSON uses the same BPMN diagram shape with additional fields on
+agentic elements:
+
+- Tasks carry ``reflectionMode``, ``trustScore``, and optional
+  ``agentDiagramRef`` links to Agent diagrams.
+- Gateways carry ``gatewayRole``, ``trustScore``, and optional
+  ``governanceDsl``. Agentic gateways are limited to the gateway kinds the
+  backend metamodel accepts.
+- Lanes carry ``role``, ``trustScore``, optional ``agentDiagramRef``, and
+  ``multiplicity`` for the number of identical agent instances represented by
+  the lane.
+
+The backend converters construct the corresponding ``AgenticTask`` /
+``AgenticGateway`` / ``AgenticLane`` subclasses on import, re-emit the WME JSON
+shape on export, and preserve the agentic information in BPMN XML
+``<extensionElements>``. Agent-to-agent runtime wiring is represented by A2A
+tags in the derived Agent diagrams and consumed by project-level deployment
+generation; it is not encoded as special BPMN message-flow attributes.
 
 Component and Deployment Diagrams
 ---------------------------------
 
 The editor supports UML 2.5 **Component** and **Deployment** diagrams as two
-distinct diagram types. They back the :doc:`UML Component
-<buml_language/model_types/uml_component>` and :doc:`UML Deployment
-<buml_language/model_types/uml_deployment>` metamodels.
+distinct diagram types. In the AgenticSwarm workflow, these diagrams are the
+whole-swarm views: Component diagrams describe the agents, capabilities, and
+agentic dependencies; Deployment diagrams allocate those agents to runtime
+nodes and carry the instance counts used by deployment generators.
 
 - A **Component diagram** holds components, subsystems, and interfaces wired
-  by provided/required-interface and dependency relationships.
-- A **Deployment diagram** holds nodes and artifacts; an artifact's
-  multiplicity on a node is written as a ``[N]`` / ``[N..M]`` suffix on the
-  artifact name.
-- The **agentic profile** is carried through the editor's *stereotype*
-  field: a component stereotyped ``solution`` / ``supervision`` /
-  ``consensus`` / ``collaboration`` becomes an agent; ``skill`` / ``tool``
-  promote a component to that capability subtype; a dependency stereotyped
-  ``delegates`` / ``has`` / ``uses`` / … becomes a typed agentic edge. A
+  by provided/required-interface and dependency relationships. The agentic
+  profile is carried through the editor's ``stereotype`` field: a component
+  stereotyped ``solution`` / ``supervision`` / ``consensus`` /
+  ``collaboration`` becomes an agent; ``skill`` / ``tool`` promote a
+  component to that capability subtype; a dependency stereotyped
+  ``delegates`` / ``has`` / ``uses`` / ... becomes a typed agentic edge. A
   dependency can also carry a permission suffix, e.g.
   ``delegates {permission: repo:merge:approve}``.
+- A **Deployment diagram** holds nodes and artifacts. An artifact's
+  multiplicity on a node is written as a ``[N]`` / ``[N..M]`` suffix on the
+  artifact name. Agentic artifacts can also carry ``agentModelRef`` so the
+  backend can resolve the deployed artifact back to the Agent diagram that
+  defines its runtime behaviour.
+- Project-level derivation connects the views: Agentic BPMN lanes can derive
+  Component agents, Components can derive Deployment artifacts, and linked
+  Deployment artifacts can be baked into runnable BAF agent build contexts by
+  the Docker Compose generator.
 
 Both diagram types round-trip losslessly: ``/export-buml`` produces BUML
 Python and ``/get-json-model`` reads it back. See
