@@ -64,7 +64,7 @@ _NS = {
 
 # BESSER-PEARL is the publishing org for files emitted by this generator.
 # `xmlns:bpmn=<OMG URI>` is what makes this a BPMN file; `targetNamespace` is
-# just the source identifier — see 05- guide §2.
+# just the source identifier.
 _TARGET_NAMESPACE = "http://besser-pearl.org/bpmn"
 
 
@@ -123,8 +123,8 @@ def _emit_agentic_extension(host_el, obj) -> None:
     * ``reflectionMode`` -- iff ``AgenticTask``.
     * ``gatewayRole`` -- iff ``AgenticGateway``.
     * ``trustScore`` -- on every agentic subclass.
-    * ``agentDiagramRef`` -- iff carried + set (the agentic task, WME guide 11;
-      or the legacy lane carrier). Never on gateways.
+    * ``agentDiagramRef`` -- iff carried + set (the agentic task, or the legacy
+      lane carrier). Never on gateways.
 
     A merging ``AgenticGateway`` with a ``governance_dsl`` additionally emits a
     sibling ``<agentic:governance>`` CDATA-style child (escaped text -- stdlib
@@ -139,8 +139,8 @@ def _emit_agentic_extension(host_el, obj) -> None:
     attrs: dict = {}
     if isinstance(obj, AgenticLane):
         attrs["role"] = obj.role.value
-        # WME 3c: swarm size. Emit only when > 1 (absence = default 1),
-        # matching WME's 04D2 exporter.
+        # Swarm size. Emit only when > 1 (absence = default 1), matching WME's
+        # exporter behavior.
         if obj.swarm_size > 1:
             attrs["multiplicity"] = str(obj.swarm_size)
     if isinstance(obj, AgenticTask):
@@ -148,8 +148,8 @@ def _emit_agentic_extension(host_el, obj) -> None:
     if isinstance(obj, AgenticGateway):
         attrs["gatewayRole"] = obj.gateway_role.value
     attrs["trustScore"] = str(obj.trust_score)
-    # agentDiagramRef rides whatever construct carries it (the agentic task,
-    # WME guide 11; or the legacy lane), emitted only when set.
+    # agentDiagramRef rides whatever construct carries it (the agentic task or
+    # the legacy lane), emitted only when set.
     ref = getattr(obj, "agent_diagram_ref", None)
     if ref is not None:
         attrs["agentDiagramRef"] = ref

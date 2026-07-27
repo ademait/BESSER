@@ -145,7 +145,7 @@ def test_I3_import_agentic_task_clamps_trust_score_high():
 
 
 def test_I3b_import_agentic_task_clamps_trust_score_negative():
-    """I-3b: trustScore=-5 clamps to 0 on import."""
+    """trustScore=-5 clamps to 0 on import."""
     elements = {
         "t1": _node(
             "t1", "BPMNTask", "Review", taskType="default", marker="none",
@@ -407,7 +407,7 @@ def test_E5_export_non_agentic_gateway_emits_wme_defaults():
 
 
 # ===========================================================================
-# R-b — AgenticGateway.governance_dsl (governance-dsl guide 02; opaque CDATA)
+# AgenticGateway.governance_dsl — opaque CDATA-style payload
 # ===========================================================================
 
 _GOV_DSL = "Scopes:\n    Tasks:\n        MergeDecision\nMajorityPolicy P {\n    ratio : 0.5\n}"
@@ -428,7 +428,7 @@ def _agentic_merging_gateway_elements(extra):
 
 
 def test_Rb_c1_import_agentic_gateway_with_governance_dsl():
-    """R-b-c-1: governanceDsl on a merging gateway imports onto governance_dsl."""
+    """governanceDsl on a merging gateway imports onto governance_dsl."""
     model = process_bpmn_diagram(
         _envelope(_agentic_merging_gateway_elements({"governanceDsl": _GOV_DSL}), {})
     )
@@ -438,7 +438,7 @@ def test_Rb_c1_import_agentic_gateway_with_governance_dsl():
 
 
 def test_Rb_c2_import_agentic_gateway_blank_governance_is_none():
-    """R-b-c-2: a whitespace-only governanceDsl imports as None (matches WME gate)."""
+    """a whitespace-only governanceDsl imports as None (matches WME gate)."""
     model = process_bpmn_diagram(
         _envelope(_agentic_merging_gateway_elements({"governanceDsl": "   \n  "}), {})
     )
@@ -447,14 +447,14 @@ def test_Rb_c2_import_agentic_gateway_blank_governance_is_none():
 
 
 def test_Rb_c3_import_agentic_gateway_absent_governance_is_none():
-    """R-b-c-3: no governanceDsl key → governance_dsl is None."""
+    """no governanceDsl key → governance_dsl is None."""
     model = process_bpmn_diagram(_envelope(_agentic_merging_gateway_elements({}), {}))
     [gw] = next(iter(model.processes)).flow_nodes
     assert gw.governance_dsl is None
 
 
 def test_Rb_c4_export_agentic_gateway_with_governance_emits_field():
-    """R-b-c-4: an AgenticGateway with governance_dsl emits governanceDsl."""
+    """an AgenticGateway with governance_dsl emits governanceDsl."""
     gw = AgenticGateway(name="Vote", gateway_type=GatewayType.PARALLEL,
                         gateway_role=GatewayRole.MERGING,
                         governance_dsl=_GOV_DSL)
@@ -464,7 +464,7 @@ def test_Rb_c4_export_agentic_gateway_with_governance_emits_field():
 
 
 def test_Rb_c5_export_agentic_gateway_without_governance_omits_field():
-    """R-b-c-5: an AgenticGateway with no governance_dsl omits governanceDsl."""
+    """an AgenticGateway with no governance_dsl omits governanceDsl."""
     gw = AgenticGateway(name="Vote", gateway_type=GatewayType.PARALLEL,
                         gateway_role=GatewayRole.MERGING)
     out = _process_with_node(gw)
@@ -473,14 +473,14 @@ def test_Rb_c5_export_agentic_gateway_without_governance_omits_field():
 
 
 def test_Rb_c6_export_non_agentic_gateway_no_governance():
-    """R-b-c-6: a base Gateway never carries governanceDsl."""
+    """a base Gateway never carries governanceDsl."""
     out = _process_with_node(Gateway(name="Plain", gateway_type=GatewayType.EXCLUSIVE))
     [entry] = out["elements"].values()
     assert "governanceDsl" not in entry
 
 
 def test_Rb_c7_roundtrip_agentic_gateway_governance_preserved():
-    """R-b-c-7: JSON → BUML → JSON preserves a multi-line governanceDsl verbatim."""
+    """JSON → BUML → JSON preserves a multi-line governanceDsl verbatim."""
     out = bpmn_object_to_json(
         process_bpmn_diagram(
             _envelope(_agentic_merging_gateway_elements({"governanceDsl": _GOV_DSL}), {})
@@ -649,7 +649,7 @@ def test_R5_roundtrip_mixed_diagram():
 
 
 # ===========================================================================
-# S1 — AgenticLane.agent_diagram_ref (WME 08 cross-diagram link)
+# AgenticLane.agent_diagram_ref — legacy lane-to-agent link
 # ===========================================================================
 
 _REF = "3f0a1c2d-4e5b-4f6a-9012-3456789abcde"
@@ -665,7 +665,7 @@ def _lane_elements(extra):
 
 
 def test_S1_c1_import_agentic_lane_with_agent_diagram_ref():
-    """S1-c-1: agentDiagramRef on the swimlane imports onto the AgenticLane."""
+    """agentDiagramRef on the swimlane imports onto the AgenticLane."""
     model = process_bpmn_diagram(_envelope(_lane_elements({"agentDiagramRef": _REF}), {}))
     [participant] = model.collaboration.participants
     [lane] = participant.process.lanes
@@ -674,7 +674,7 @@ def test_S1_c1_import_agentic_lane_with_agent_diagram_ref():
 
 
 def test_S1_c2_import_agentic_lane_empty_ref_is_none():
-    """S1-c-2: an empty-string agentDiagramRef imports as None."""
+    """an empty-string agentDiagramRef imports as None."""
     model = process_bpmn_diagram(_envelope(_lane_elements({"agentDiagramRef": ""}), {}))
     [participant] = model.collaboration.participants
     [lane] = participant.process.lanes
@@ -682,7 +682,7 @@ def test_S1_c2_import_agentic_lane_empty_ref_is_none():
 
 
 def test_S1_c3_import_agentic_lane_absent_ref_is_none():
-    """S1-c-3: no agentDiagramRef key → agent_diagram_ref is None."""
+    """no agentDiagramRef key → agent_diagram_ref is None."""
     model = process_bpmn_diagram(_envelope(_lane_elements({}), {}))
     [participant] = model.collaboration.participants
     [lane] = participant.process.lanes
@@ -690,7 +690,7 @@ def test_S1_c3_import_agentic_lane_absent_ref_is_none():
 
 
 def test_S1_c4_export_agentic_lane_with_ref_emits_field():
-    """S1-c-4: an AgenticLane with a ref emits agentDiagramRef in the JSON entry."""
+    """an AgenticLane with a ref emits agentDiagramRef in the JSON entry."""
     out = _wrap_lane(AgenticLane(name="AgentReviewer", role=AgentRole.SUPERVISION,
                                  trust_score=90, agent_diagram_ref=_REF))
     lane_entry = next(e for e in out["elements"].values()
@@ -699,7 +699,7 @@ def test_S1_c4_export_agentic_lane_with_ref_emits_field():
 
 
 def test_S1_c5_export_agentic_lane_without_ref_omits_field():
-    """S1-c-5: an AgenticLane with no ref omits agentDiagramRef entirely (WME-08 behaviour)."""
+    """an AgenticLane with no ref omits agentDiagramRef entirely."""
     out = _wrap_lane(AgenticLane(name="AgentReviewer", role=AgentRole.SUPERVISION,
                                  trust_score=90))
     lane_entry = next(e for e in out["elements"].values()
@@ -708,7 +708,7 @@ def test_S1_c5_export_agentic_lane_without_ref_omits_field():
 
 
 def test_S1_c6_export_non_agentic_lane_no_ref():
-    """S1-c-6: a base Lane never carries agentDiagramRef."""
+    """a base Lane never carries agentDiagramRef."""
     out = _wrap_lane(Lane(name="Plain"))
     lane_entry = next(e for e in out["elements"].values()
                       if e["type"] == "BPMNSwimlane")
@@ -716,7 +716,7 @@ def test_S1_c6_export_non_agentic_lane_no_ref():
 
 
 def test_S1_c7_roundtrip_agentic_lane_with_ref():
-    """S1-c-7: JSON → BUML → JSON preserves agentDiagramRef; task does NOT pick it up."""
+    """JSON → BUML → JSON preserves agentDiagramRef; task does NOT pick it up."""
     elements = _lane_elements({"agentDiagramRef": _REF})
     elements["t1"] = _node("t1", "BPMNTask", "Review", owner="l1",
                            taskType="user", marker="none",
@@ -731,11 +731,11 @@ def test_S1_c7_roundtrip_agentic_lane_with_ref():
 
 
 # ===========================================================================
-# 3c — AgenticLane.multiplicity (WME 2026-06-08 point #3 swarm size)
+# AgenticLane.multiplicity — WME swarm size field
 # ===========================================================================
 
 def test_3c_roundtrip_agentic_lane_multiplicity():
-    """3c: JSON multiplicity=4 → BUML multiplicity=4 → JSON multiplicity=4."""
+    """JSON multiplicity=4 → BUML multiplicity=4 → JSON multiplicity=4."""
     model = process_bpmn_diagram(_envelope(_lane_elements({"multiplicity": 4}), {}))
     [participant] = model.collaboration.participants
     [lane] = participant.process.lanes
@@ -747,7 +747,7 @@ def test_3c_roundtrip_agentic_lane_multiplicity():
 
 
 def test_3c_import_agentic_lane_absent_multiplicity_is_one():
-    """3c: no multiplicity key → multiplicity is 1."""
+    """no multiplicity key → multiplicity is 1."""
     model = process_bpmn_diagram(_envelope(_lane_elements({}), {}))
     [participant] = model.collaboration.participants
     [lane] = participant.process.lanes
@@ -755,7 +755,7 @@ def test_3c_import_agentic_lane_absent_multiplicity_is_one():
 
 
 def test_3c_import_agentic_lane_zero_multiplicity_clamps_to_one():
-    """3c: multiplicity=0 clamps to 1 on import (WME-tolerant bridge)."""
+    """multiplicity=0 clamps to 1 on import (WME-tolerant bridge)."""
     model = process_bpmn_diagram(_envelope(_lane_elements({"multiplicity": 0}), {}))
     [participant] = model.collaboration.participants
     [lane] = participant.process.lanes
@@ -763,7 +763,7 @@ def test_3c_import_agentic_lane_zero_multiplicity_clamps_to_one():
 
 
 def test_3c_export_non_agentic_lane_carries_default_multiplicity():
-    """3c: a base Lane emits multiplicity=1 from _WME_LANE_DEFAULTS."""
+    """a base Lane emits multiplicity=1 from _WME_LANE_DEFAULTS."""
     out = _wrap_lane(Lane(name="Plain"))
     lane_entry = next(e for e in out["elements"].values()
                       if e["type"] == "BPMNSwimlane")
@@ -837,7 +837,7 @@ def test_role_invalid_raises_conversion_error():
 
 
 # ===========================================================================
-# R-a — AgenticTask.agent_diagram_ref (WME guide 11 canonical task->agent link)
+# AgenticTask.agent_diagram_ref — canonical task-to-agent link
 # ===========================================================================
 
 def _agentic_task_elements(extra):
@@ -853,7 +853,7 @@ def _agentic_task_elements(extra):
 
 
 def test_Ra_c1_import_agentic_task_with_agent_diagram_ref():
-    """R-a-c-1: agentDiagramRef on the task imports onto the AgenticTask."""
+    """agentDiagramRef on the task imports onto the AgenticTask."""
     model = process_bpmn_diagram(_envelope(_agentic_task_elements({"agentDiagramRef": _REF}), {}))
     [task] = next(iter(model.processes)).flow_nodes
     assert isinstance(task, AgenticTask)
@@ -861,21 +861,21 @@ def test_Ra_c1_import_agentic_task_with_agent_diagram_ref():
 
 
 def test_Ra_c2_import_agentic_task_empty_ref_is_none():
-    """R-a-c-2: an empty-string agentDiagramRef imports as None."""
+    """an empty-string agentDiagramRef imports as None."""
     model = process_bpmn_diagram(_envelope(_agentic_task_elements({"agentDiagramRef": ""}), {}))
     [task] = next(iter(model.processes)).flow_nodes
     assert task.agent_diagram_ref is None
 
 
 def test_Ra_c3_import_agentic_task_absent_ref_is_none():
-    """R-a-c-3: no agentDiagramRef key → agent_diagram_ref is None."""
+    """no agentDiagramRef key → agent_diagram_ref is None."""
     model = process_bpmn_diagram(_envelope(_agentic_task_elements({}), {}))
     [task] = next(iter(model.processes)).flow_nodes
     assert task.agent_diagram_ref is None
 
 
 def test_Ra_c4_export_agentic_task_with_ref_emits_field():
-    """R-a-c-4: an AgenticTask with a ref emits agentDiagramRef in the JSON entry."""
+    """an AgenticTask with a ref emits agentDiagramRef in the JSON entry."""
     out = _process_with_node(AgenticTask(name="Review", task_type=TaskType.USER,
                                          agent_diagram_ref=_REF))
     [entry] = out["elements"].values()
@@ -883,21 +883,21 @@ def test_Ra_c4_export_agentic_task_with_ref_emits_field():
 
 
 def test_Ra_c5_export_agentic_task_without_ref_omits_field():
-    """R-a-c-5: an AgenticTask with no ref omits agentDiagramRef entirely."""
+    """an AgenticTask with no ref omits agentDiagramRef entirely."""
     out = _process_with_node(AgenticTask(name="Review", task_type=TaskType.USER))
     [entry] = out["elements"].values()
     assert "agentDiagramRef" not in entry
 
 
 def test_Ra_c6_export_non_agentic_task_no_ref():
-    """R-a-c-6: a base Task never carries agentDiagramRef."""
+    """a base Task never carries agentDiagramRef."""
     out = _process_with_node(Task(name="Plain", task_type=TaskType.DEFAULT))
     [entry] = out["elements"].values()
     assert "agentDiagramRef" not in entry
 
 
 def test_Ra_c7_roundtrip_agentic_task_with_ref():
-    """R-a-c-7: JSON → BUML → JSON preserves agentDiagramRef on the task."""
+    """JSON → BUML → JSON preserves agentDiagramRef on the task."""
     out = bpmn_object_to_json(
         process_bpmn_diagram(_envelope(_agentic_task_elements({"agentDiagramRef": _REF}), {}))
     )
@@ -906,11 +906,11 @@ def test_Ra_c7_roundtrip_agentic_task_with_ref():
 
 
 # ===========================================================================
-# S2 tolerance — collaborationMode silently ignored (P3' rationalization)
+# collaborationMode tolerance — silently ignored
 # ===========================================================================
 
 def test_S2_collaboration_mode_silently_ignored():
-    """S2: collaborationMode in the JSON is silently ignored — task imports OK."""
+    """collaborationMode in the JSON is silently ignored — task imports OK."""
     elements = {
         "t1": _node("t1", "BPMNTask", "Review", taskType="user", marker="none",
                     isAgentic=True, reflectionMode="cross", trustScore=80,

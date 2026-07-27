@@ -1,7 +1,6 @@
-"""item 37 — guard that the parser surfaces `participants` and `ratio`.
+"""Guard that the parser surfaces `participants` and `ratio`.
 
-item 35 shipped `summarize_governance` without a unit test; this is the first. The
-star fan-out + tally (item 37) depend on these two keys being present in the returned
+The star fan-out and tally depend on these two keys being present in the returned
 dict. If the `governancedsl` (ANTLR `grammar.*` / `metamodel.governance`) package is
 not importable in the env, the parser hits its raw-text fallback — the participant
 list is then empty and the ratio None by design, so the voting-path tests are skipped.
@@ -65,7 +64,7 @@ def test_fallback_path_has_empty_participants_and_no_ratio():
 
 
 # ---------------------------------------------------------------------------
-# Phase 1 — type-preserving default policy on an unparseable .gov.
+# type-preserving default policy on an unparseable .gov.
 # ---------------------------------------------------------------------------
 
 @pytest.mark.parametrize("kw", [

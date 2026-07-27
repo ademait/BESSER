@@ -1,10 +1,11 @@
-"""item 37 — deterministic governance vote tally for the BAF A2A merge agent.
+"""Deterministic governance vote tally for the BAF A2A merge agent.
 
 Self-contained (stdlib only) so the docker_compose generator can bake this module's
 SOURCE verbatim into the generated agent.py — the count then runs IN the container
 with no besser/ANTLR import. The same functions are unit-tested in BESSER
 (tests/generators/agents/test_governance_engine.py), so the baked copy is the tested
-copy. See guide 11 §2/§3 for the candidate-selection semantics.
+copy. The helpers implement candidate-selection voting semantics used by governed
+merge agents.
 """
 import re
 

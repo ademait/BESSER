@@ -59,7 +59,7 @@ def parse_a2a_line(line: str) -> Optional[dict]:
         order = _ORDER_SENTINEL
     kind = kv.get("kind")
     if kind is not None and kind not in _KINDS:
-        kind = None                       # unknown kind → treat as plain channel (D6)
+        kind = None                       # unknown kind → treat as a plain channel
     return {
         "dir": direction,
         "peer": kv.get("peer", ""),
@@ -87,8 +87,8 @@ def parse_a2a_out_block(description: Optional[str]) -> list:
 def annotate_agent_with_a2a(agent, agent_diagram_json: dict):
     """Attach `agent._a2a = {outbound, inbound}` parsed from the AgentDiagram JSON.
 
-    Standalone (D7): does NOT touch process_agent_diagram. Call it right after the
-    agent is built. No-op (no attribute set) when the diagram carries no a2a: tag, so
+    Standalone: does NOT touch process_agent_diagram. Call it right after the agent
+    is built. No-op (no attribute set) when the diagram carries no a2a: tag, so
     legacy agents stay byte-identical and the generator's getattr(agent,'_a2a',None) is
     falsy. Reads only strings (peer/state/intent names), so it never needs the built
     State/Transition objects — fully decoupled from the metamodel.

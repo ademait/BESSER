@@ -15,10 +15,8 @@ test is the load-bearing one for the merge -- it exercises the spliced
 a single executable ``project.py``.
 
 The payloads mirror the real-export wire shape used by the converter unit
-tests (which in turn mirror the ``02-D7-*.json`` WME exports). They are kept
-inline so the test is self-contained and CI-safe (the ``.claude`` D7 files are
-local-only). See ``.claude/agentic-inter-diagram/01-...`` for the manual
-reproduction recipe against real WME exports.
+tests. They are kept inline so the test is self-contained and CI-safe while
+still exercising the same shape as real WME exports.
 
 Async/ASGI harness mirrors ``test_api_integration.py`` (the installed
 starlette/httpx versions do not support the legacy ``TestClient(app=...)``).

@@ -287,7 +287,7 @@ def test_agentic_lane_repr_includes_ref():
 
 
 # ---------------------------------------------------------------------------
-# AgenticLane.swarm_size - 3c (WME 2026-06-08 point #3 swarm size)
+# AgenticLane.swarm_size
 # ---------------------------------------------------------------------------
 
 def test_agentic_lane_swarm_size_default():
@@ -318,53 +318,53 @@ def test_agentic_lane_repr_includes_swarm_size():
     assert "swarm_size=3" in repr(lane)
 
 
-# AgenticTask.agent_diagram_ref — R-a (WME guide 11 canonical task->agent link)
+# AgenticTask.agent_diagram_ref — canonical task-to-agent link
 # ---------------------------------------------------------------------------
 
 def test_agentic_task_agent_diagram_ref_default_none():
-    """Constructed without the kwarg → agent_diagram_ref is None (R-a-mm-1)."""
+    """Constructed without the kwarg → agent_diagram_ref is None."""
     task = AgenticTask(name="Review")
     assert task.agent_diagram_ref is None
 
 
 def test_agentic_task_agent_diagram_ref_str():
-    """Accepts an arbitrary string (e.g. a UUID) verbatim — opaque (R-a-mm-2)."""
+    """Accepts an arbitrary string (e.g. a UUID) verbatim — opaque."""
     ref = "3f0a1c2d-4e5b-4f6a-9012-3456789abcde"
     task = AgenticTask(name="Review", agent_diagram_ref=ref)
     assert task.agent_diagram_ref == ref
 
 
 def test_agentic_task_agent_diagram_ref_none_allowed():
-    """Explicit None is accepted (R-a-mm-3)."""
+    """Explicit None is accepted."""
     task = AgenticTask(name="Review", agent_diagram_ref=None)
     assert task.agent_diagram_ref is None
 
 
 @pytest.mark.parametrize("value", [123, 0.5, ["x"], {"a": 1}, True])
 def test_agentic_task_agent_diagram_ref_type_error(value):
-    """Non-str / non-None raises TypeError (R-a-mm-4)."""
+    """Non-str / non-None raises TypeError."""
     with pytest.raises(TypeError, match="agent_diagram_ref must be a str or None"):
         AgenticTask(name="Review", agent_diagram_ref=value)
 
 
 def test_agentic_task_repr_includes_ref():
-    """__repr__ includes agent_diagram_ref (R-a-mm-5)."""
+    """__repr__ includes agent_diagram_ref."""
     task = AgenticTask(name="Review", trust_score=90, agent_diagram_ref="ref-123")
     assert "agent_diagram_ref='ref-123'" in repr(task)
 
 
 # ---------------------------------------------------------------------------
-# AgenticGateway.governance_dsl — R-b (governance-dsl guide 02; opaque CDATA)
+# AgenticGateway.governance_dsl — opaque CDATA-style payload
 # ---------------------------------------------------------------------------
 
 def test_agentic_gateway_governance_dsl_default_none():
-    """Constructed without the kwarg → governance_dsl is None (R-b-mm-1)."""
+    """Constructed without the kwarg → governance_dsl is None."""
     gw = AgenticGateway(name="Vote", gateway_type=GatewayType.PARALLEL)
     assert gw.governance_dsl is None
 
 
 def test_agentic_gateway_governance_dsl_str():
-    """Accepts an arbitrary (multi-line) string verbatim — opaque (R-b-mm-2)."""
+    """Accepts an arbitrary (multi-line) string verbatim — opaque."""
     dsl = "Scopes:\n    Tasks:\n        MergeDecision\nMajorityPolicy P {\n}"
     gw = AgenticGateway(name="Vote", gateway_type=GatewayType.PARALLEL,
                         gateway_role=GatewayRole.MERGING, governance_dsl=dsl)
@@ -372,7 +372,7 @@ def test_agentic_gateway_governance_dsl_str():
 
 
 def test_agentic_gateway_governance_dsl_role_independent():
-    """No invariant ties governance_dsl to gateway_role (R-b-mm-3)."""
+    """No invariant ties governance_dsl to gateway_role."""
     gw = AgenticGateway(name="Split", gateway_type=GatewayType.PARALLEL,
                         gateway_role=GatewayRole.DIVERGING, governance_dsl="x")
     assert gw.governance_dsl == "x"
@@ -380,14 +380,14 @@ def test_agentic_gateway_governance_dsl_role_independent():
 
 @pytest.mark.parametrize("value", [123, 0.5, ["x"], {"a": 1}, True])
 def test_agentic_gateway_governance_dsl_type_error(value):
-    """Non-str / non-None raises TypeError (R-b-mm-4)."""
+    """Non-str / non-None raises TypeError."""
     with pytest.raises(TypeError, match="governance_dsl must be a str or None"):
         AgenticGateway(name="Vote", gateway_type=GatewayType.PARALLEL,
                        governance_dsl=value)
 
 
 def test_agentic_gateway_repr_marks_governance():
-    """__repr__ marks governance_dsl as set without dumping the blob (R-b-mm-5)."""
+    """__repr__ marks governance_dsl as set without dumping the blob."""
     gw = AgenticGateway(name="Vote", gateway_type=GatewayType.PARALLEL,
                         gateway_role=GatewayRole.MERGING, governance_dsl="big\nblob")
     assert "governance_dsl=<set>" in repr(gw)

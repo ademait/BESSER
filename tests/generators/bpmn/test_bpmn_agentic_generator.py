@@ -239,10 +239,10 @@ class TestAgenticLaneEmission:
         for forbidden in ("reflectionMode", "gatewayRole",
                           "collaborationMode", "mergingStrategy"):
             assert forbidden not in attrs
-        # 3c: default-1 lane carries no multiplicity attribute.
+        # A default-1 lane carries no multiplicity attribute.
         assert "multiplicity" not in attrs
 
-    def test_agentic_lane_emits_multiplicity_when_gt_one(self, tmp_path):  # 3c
+    def test_agentic_lane_emits_multiplicity_when_gt_one(self, tmp_path):
         t = Task(name="Code")
         lane = AgenticLane(name="Reviewer", role=AgentRole.SUPERVISION,
                            trust_score=85, swarm_size=3, flow_nodes={t})
@@ -252,7 +252,7 @@ class TestAgenticLaneEmission:
         attrs = _agentic_inner(root)[0].attrib
         assert attrs.get("multiplicity") == "3"
 
-    def test_agentic_lane_omits_multiplicity_when_one(self, tmp_path):  # 3c
+    def test_agentic_lane_omits_multiplicity_when_one(self, tmp_path):
         # _agentic_lane_model() defaults swarm_size to 1.
         root = _parse(_generate(_agentic_lane_model(), tmp_path))
         attrs = _agentic_inner(root)[0].attrib
@@ -318,7 +318,7 @@ class TestEnumValueStrings:
         (ReflectionMode.CROSS, "cross"),
         (ReflectionMode.HUMAN, "human"),
     ])
-    def test_reflection_mode_strings(self, reflection, expected, tmp_path):  # G-11a
+    def test_reflection_mode_strings(self, reflection, expected, tmp_path):
         t = AgenticTask(name="X", reflection_mode=reflection, trust_score=10)
         p = Process(name="P", flow_nodes={t})
         model = BPMNModel(name="M", processes={p})
@@ -331,7 +331,7 @@ class TestEnumValueStrings:
         (AgentRole.COLLABORATION, "collaboration"),
         (AgentRole.CONSENSUS, "consensus"),
     ])
-    def test_role_strings(self, role, expected, tmp_path):  # G-11c
+    def test_role_strings(self, role, expected, tmp_path):
         t = Task(name="x")
         lane = AgenticLane(name="L", role=role, trust_score=10, flow_nodes={t})
         p = Process(name="P", flow_nodes={t}, lanes={lane})
@@ -367,14 +367,14 @@ class TestDeterminism:
 
 
 # ---------------------------------------------------------------------------
-# G-13 -- OQ-5 generator catch-up: task agentDiagramRef, gateway governance
+# Agentic task agentDiagramRef and gateway governance XML output
 # ---------------------------------------------------------------------------
 
 _GOV_DSL = "Scopes:\n    Tasks:\n        Merge\nMajorityPolicy P {\n    ratio : 0.5\n}"
 
 
 class TestOQ5Emission:
-    def test_task_emits_agent_diagram_ref(self, tmp_path):  # G-13a
+    def test_task_emits_agent_diagram_ref(self, tmp_path):
         t = AgenticTask(name="Review", task_type=TaskType.USER,
                         reflection_mode=ReflectionMode.CROSS, trust_score=80,
                         agent_diagram_ref="agent-uuid-123")
@@ -382,7 +382,7 @@ class TestOQ5Emission:
         inner = _agentic_inner(_parse(_generate(model, tmp_path)))[0]
         assert inner.attrib.get("agentDiagramRef") == "agent-uuid-123"
 
-    def test_gateway_emits_governance_child(self, tmp_path):  # G-13b
+    def test_gateway_emits_governance_child(self, tmp_path):
         g = AgenticGateway(name="Vote", gateway_type=GatewayType.PARALLEL,
                            gateway_role=GatewayRole.MERGING,
                            governance_dsl=_GOV_DSL)
@@ -392,11 +392,11 @@ class TestOQ5Emission:
         assert len(gov) == 1
         assert gov[0].text == _GOV_DSL  # verbatim (ET.indent leaves leaf text alone)
 
-    def test_gateway_without_governance_emits_no_child(self, tmp_path):  # G-13c
+    def test_gateway_without_governance_emits_no_child(self, tmp_path):
         root = _parse(_generate(_agentic_gateway_merging_model(), tmp_path))
         assert _findall(root, "agentic:governance") == []
 
-    def test_base_message_flow_emits_no_extension(self, tmp_path):  # G-13d (updated P3')
+    def test_base_message_flow_emits_no_extension(self, tmp_path):
         """A base MessageFlow no longer gets an agentic extension element."""
         t1, t2 = Task(name="T1"), Task(name="T2")
         p1 = Process(name="proc1", flow_nodes={t1})

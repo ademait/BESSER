@@ -2,13 +2,13 @@
 
 Returns a ``BPMNModel`` metamodel instance from the WME BPMN diagram JSON envelope. The
 algorithm is the standard nodes-first / edges-second pass with a containment pass in
-between (see ``.claude/bpmn/03-bpmn-converters-guide.md`` §4).
+between.
 
 Design points:
 
-* **Identity is by object** (decision D5): WME ids ride in ``element.layout`` so the
+* **Identity is by object**: WME ids ride in ``element.layout`` so the
   converter pair can round-trip them, but the metamodel itself stays id-free.
-* **Layout is opaque** (decision D8): ``BPMNElement.layout`` carries the WME bounds /
+* **Layout is opaque**: ``BPMNElement.layout`` carries the WME bounds /
   path / stash without the metamodel ever interpreting it.
 * **Validation is a separate concern**: this processor never calls ``BPMNModel.validate``
   — it only produces a ``BPMNModel``. Callers run validation if they need it.
@@ -251,10 +251,10 @@ def _build_node(elem: dict):
                     f"Unknown role '{role_value}' on AgenticLane '{name}'."
                 ) from exc
             trust = _clamp_trust_score(elem.get("trustScore", 0))
-            # WME 08: optional opaque AgentDiagram id. Empty string / absent → None.
-            # No UUID validation (audit OQ-2) — pass through verbatim.
+            # Optional opaque AgentDiagram id. Empty string / absent → None.
+            # No UUID validation — pass through verbatim.
             agent_ref = elem.get("agentDiagramRef") or None
-            # WME 3c: swarm size; absent → 1 (single agent).
+            # Swarm size; absent → 1 (single agent).
             swarm_size = _clamp_swarm_size(elem.get("multiplicity", 1))
             return AgenticLane(name=name, role=role, trust_score=trust,
                                agent_diagram_ref=agent_ref,
@@ -331,8 +331,7 @@ def process_bpmn_diagram(json_data: dict) -> BPMNModel:
         raise ConversionError("BPMN diagram JSON is missing the 'model' key.")
 
     if model_data.get("type") and model_data.get("type") != BPMN_DIAGRAM_TYPE:
-        # Don't reject — WME may not have aligned yet (the WME-side agent task tracked in
-        # `.claude/bpmn/bpmn-metamodel-work.md`). Log so the mismatch is visible.
+        # Don't reject — WME may not have aligned yet. Log so the mismatch is visible.
         logger.warning(
             "BPMN diagram envelope type is '%s', expected '%s'.",
             model_data.get("type"), BPMN_DIAGRAM_TYPE,
@@ -440,7 +439,7 @@ def process_bpmn_diagram(json_data: dict) -> BPMNModel:
             outer.add_data_object(obj)
             process_of[obj] = outer
 
-    # Data stores live model-wide (D8 / spec §10.3 — root-level element).
+    # Data stores live model-wide (BPMN spec §10.3 — root-level element).
     data_stores = {obj for obj in node_by_id.values() if isinstance(obj, DataStore)}
 
     # --- Build collaboration / processes set -------------------------------

@@ -4,9 +4,9 @@ Generates Python code from a ``BPMNModel`` metamodel instance. The emitted code 
 ``exec()``'d to reconstruct an identical model — that is the contract
 ``services/converters/buml_to_json/bpmn_diagram_converter.bpmn_buml_to_json`` relies on.
 
-Build style — option (b) per ``.claude/bpmn/04-bpmn-code-builder-guide.md``: empty
-containers first, then ``add_*`` calls. Mirrors ``state_machine_builder.py`` so the
-emitted modules read the same way as the existing diagram-type builders.
+Build style: empty containers first, then ``add_*`` calls. Mirrors
+``state_machine_builder.py`` so the emitted modules read the same way as the
+existing diagram-type builders.
 """
 
 from typing import Optional
@@ -45,8 +45,8 @@ from besser.utilities.utils import sort_by_timestamp
 class _NameDispenser:
     """Mints a unique Python variable name per metamodel object.
 
-    BPMN names can be empty, repeated, or whitespace-only (decision D5 — identity is by
-    object). The dispenser combines the metamodel class name with a sanitised version
+    BPMN names can be empty, repeated, or whitespace-only; identity is by object.
+    The dispenser combines the metamodel class name with a sanitised version
     of ``obj.name`` and a numeric suffix when needed, then caches the result so all
     later references (e.g. flow endpoints) resolve to the same identifier.
     """
@@ -349,7 +349,7 @@ def bpmn_model_to_code(model: BPMNModel, file_path: Optional[str] = None,
     needed: set = {"BPMNModel"}
     dispenser = _NameDispenser()
 
-    # 2. Empty model + (3) empty processes
+    # Empty model + empty processes
     body.append(f"{model_var_name} = BPMNModel(name={_quoted(model.name)})")
     body.append("")
 
@@ -364,38 +364,38 @@ def bpmn_model_to_code(model: BPMNModel, file_path: Optional[str] = None,
         body.append(f"{model_var_name}.add_process({var})")
         body.append("")
 
-    # 4. Per-process contents
+    # Per-process contents
     for process in sort_by_timestamp(model.processes):
         var = process_vars[process]
 
-        # 4a — flow nodes (recursing into sub-processes) + sequence flows
+        # Flow nodes (recursing into sub-processes) + sequence flows
         if process.flow_nodes:
             body.append(f"# Flow nodes in: {_comment_safe(process.name) or '(unnamed)'}")
             _emit_container(process, var, dispenser, body, needed)
             body.append("")
 
-        # 4b — artifacts (annotations / groups)
+        # Artifacts (annotations / groups)
         if process.artifacts:
             body.append(f"# Artifacts in: {_comment_safe(process.name) or '(unnamed)'}")
             for artifact in sort_by_timestamp(process.artifacts):
                 _emit_artifact(artifact, var, dispenser, body, needed)
             body.append("")
 
-        # 4c — data objects
+        # Data objects
         if process.data_objects:
             body.append(f"# Data objects in: {_comment_safe(process.name) or '(unnamed)'}")
             for data_object in sort_by_timestamp(process.data_objects):
                 _emit_data_object(data_object, var, dispenser, body, needed)
             body.append("")
 
-        # 4d — lanes (after flow nodes so members are already emitted)
+        # Lanes (after flow nodes so members are already emitted)
         if process.lanes:
             body.append(f"# Lanes in: {_comment_safe(process.name) or '(unnamed)'}")
             for lane in sort_by_timestamp(process.lanes):
                 _emit_lane(lane, var, dispenser, body, needed)
             body.append("")
 
-        # 4e — associations + data associations
+        # Associations + data associations
         if process.associations:
             body.append(f"# Associations in: {_comment_safe(process.name) or '(unnamed)'}")
             for assoc in sort_by_timestamp(process.associations):
@@ -407,7 +407,7 @@ def bpmn_model_to_code(model: BPMNModel, file_path: Optional[str] = None,
                 _emit_data_association(da, var, dispenser, body, needed)
             body.append("")
 
-    # 5. Collaboration (must come AFTER processes — Participant references a Process)
+    # Collaboration (must come AFTER processes — Participant references a Process)
     if model.collaboration is not None:
         needed.update({"Collaboration", "Participant"})
         body.append("# --- Collaboration ---")

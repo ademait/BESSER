@@ -1,5 +1,4 @@
-"""item 35 — parse a WME-authored governance .gov snippet at generation time and
-produce a runtime instruction for the synthesizing agent (guide 10 §2, Option B+).
+"""Parse a WME-authored governance .gov snippet at generation time and`r`nproduce a runtime instruction for the synthesizing agent.
 
 Parsing runs HERE (BESSER backend), not in the agent container: the container only
 receives the resulting instruction string. The govdsl metamodel is BESSER-BUML based,
@@ -11,7 +10,7 @@ import re
 
 logger = logging.getLogger(__name__)
 
-# Voting policy types resolved by the deterministic in-container tally (item 37). Mirrors
+# Voting policy types resolved by the deterministic in-container tally. Mirrors
 # docker_compose_generator._VOTING_POLICIES. Non-voting policies (leader/consensus/lazy)
 # have NO vote, so their merge instruction must not ask the LLM to narrate one.
 _VOTING_POLICY_TYPES = frozenset(("VotingPolicy", "MajorityPolicy", "AbsoluteMajorityPolicy"))
@@ -108,7 +107,7 @@ def build_default_summary(policy_type, participant_names, raw_text=""):
 
 
 def _strip_comments(text: str) -> str:
-    # The govdsl grammar has no LINE_COMMENT rule (guide 10 §4); WME emits `//` headers.
+    # The govdsl grammar has no LINE_COMMENT rule; WME emits `//` headers.
     # Strip them so the parse succeeds regardless of the upstream grammar fix.
     return "\n".join(ln for ln in text.splitlines() if not ln.lstrip().startswith("//"))
 
@@ -146,7 +145,7 @@ def _summarize_policy(policy) -> dict:
         # A human can enter the policy two ways: as a non-(Agent) Individual (parsed as
         # Human) or as a Role standing in for human actors (the WME generator only ever
         # emits agents as `(Agent)`, so any Role/Human participant is a person). Either
-        # way the merge point must defer the decision to a human (guide 10 §2, point 5).
+        # way the merge point must defer the decision to a human.
         if kind != "agent":
             requires_human = True
         participants.append({
@@ -186,7 +185,7 @@ def _build_instruction(summary: dict):
     human_summary = "\n".join(facts)
     if summary["policy_type"] in _VOTING_POLICY_TYPES:
         # Voting policies are normally resolved by the deterministic in-container tally
-        # (item 37); this directive only steers the LLM on the degraded fallback path
+        #; this directive only steers the LLM on the degraded fallback path
         # (no producer resolved to a service), where an auditable vote narrative is the
         # best available audit trail.
         directive = (
@@ -241,7 +240,7 @@ def summarize_governance(dsl_text):
             "summary": human_summary,
             "requires_human": summary["requires_human"],
             "policy_type": summary["policy_type"],
-            # item 37 — the star fan-out + tally need the participant list (names +
+            # the star fan-out + tally need the participant list (names +
             # confidence weights) and the ratio. They were parsed but not surfaced.
             "participants": summary["participants"],
             "ratio": summary["ratio"],
@@ -265,7 +264,7 @@ def summarize_governance(dsl_text):
             "summary": "Governance policy (could not be parsed; shown verbatim):\n" + dsl_text,
             "requires_human": False,
             "policy_type": None,
-            # item 37 — no structured participants on the fallback path; a star vote
+            # no structured participants on the fallback path; a star vote
             # is impossible without them, so the generator keeps the topology peers.
             "participants": [],
             "ratio": None,

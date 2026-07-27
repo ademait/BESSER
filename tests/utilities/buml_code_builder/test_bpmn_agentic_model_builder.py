@@ -177,7 +177,7 @@ class TestAgenticTask:
         # CollaborationMode no longer imported (P3').
         assert "CollaborationMode" not in block
 
-    def test_emit_agentic_task_agent_diagram_ref(self):  # R-a-b-1
+    def test_emit_agentic_task_agent_diagram_ref(self):
         """An AgenticTask with agent_diagram_ref round-trips through exec'd code."""
         t = AgenticTask(name="Review", task_type=TaskType.USER,
                         reflection_mode=ReflectionMode.CROSS, trust_score=80,
@@ -189,7 +189,7 @@ class TestAgenticTask:
         assert isinstance(node, AgenticTask)
         assert node.agent_diagram_ref == "ref-123"
 
-    def test_emit_agentic_task_without_ref_omits_kwarg(self):  # R-a-b-2
+    def test_emit_agentic_task_without_ref_omits_kwarg(self):
         """An AgenticTask with no ref emits no agent_diagram_ref kwarg."""
         source = bpmn_model_to_code(_agentic_task_model())
         assert "agent_diagram_ref" not in source
@@ -230,7 +230,7 @@ class TestAgenticGateway:
         assert "CollaborationMode" not in block
         assert "MergingStrategy" not in block
 
-    def test_emit_agentic_gateway_governance_dsl(self):  # R-b-b-1
+    def test_emit_agentic_gateway_governance_dsl(self):
         """A multi-line governance_dsl round-trips through exec'd code verbatim."""
         dsl = "Scopes:\n    Tasks:\n        Merge\nMajorityPolicy P {\n    ratio : 0.5\n}"
         gw = AgenticGateway(name="Vote", gateway_type=GatewayType.PARALLEL,
@@ -243,7 +243,7 @@ class TestAgenticGateway:
         assert isinstance(node, AgenticGateway)
         assert node.governance_dsl == dsl
 
-    def test_emit_agentic_gateway_without_governance_omits_kwarg(self):  # R-b-b-2
+    def test_emit_agentic_gateway_without_governance_omits_kwarg(self):
         """An AgenticGateway with no governance_dsl emits no governance_dsl kwarg."""
         source = bpmn_model_to_code(_agentic_gateway_merging_model())
         assert "governance_dsl" not in source
@@ -275,7 +275,7 @@ class TestAgenticLane:
         for name in ("AgenticLane", "AgentRole"):
             assert name in block, f"expected {name} in import block, got: {block!r}"
 
-    def test_emit_agentic_lane_with_ref(self):  # S1-b-1
+    def test_emit_agentic_lane_with_ref(self):
         """An AgenticLane with agent_diagram_ref round-trips through exec'd code."""
         t = Task(name="Code")
         lane = AgenticLane(name="Reviewer", role=AgentRole.SUPERVISION,
@@ -290,12 +290,12 @@ class TestAgenticLane:
         assert isinstance(rec_lane, AgenticLane)
         assert rec_lane.agent_diagram_ref == "ref-123"
 
-    def test_emit_agentic_lane_without_ref_omits_kwarg(self):  # S1-b-2
+    def test_emit_agentic_lane_without_ref_omits_kwarg(self):
         """An AgenticLane with no ref emits no agent_diagram_ref kwarg."""
         source = bpmn_model_to_code(_agentic_lane_model())
         assert "agent_diagram_ref" not in source
 
-    def test_emit_agentic_lane_with_multiplicity(self):  # 3c
+    def test_emit_agentic_lane_with_multiplicity(self):
         """An AgenticLane with swarm_size > 1 round-trips through exec'd code."""
         t = Task(name="Code")
         lane = AgenticLane(name="Reviewer", role=AgentRole.SUPERVISION,
@@ -309,7 +309,7 @@ class TestAgenticLane:
         assert isinstance(rec_lane, AgenticLane)
         assert rec_lane.swarm_size == 3
 
-    def test_emit_agentic_lane_default_multiplicity_omits_kwarg(self):  # 3c
+    def test_emit_agentic_lane_default_multiplicity_omits_kwarg(self):
         """A default-1 lane emits no swarm_size kwarg and round-trips to 1."""
         source = bpmn_model_to_code(_agentic_lane_model())
         assert "swarm_size" not in source

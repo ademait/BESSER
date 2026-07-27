@@ -688,7 +688,7 @@ async def _handle_web_app_project_generation(input_data: ProjectInput, generator
 
 def _producer_agent_names(gateway_id, relationships, items_by_id, lane_ref,
                           agent_models_by_id) -> list:
-    """item 37 — the candidate PRODUCERS of a merging gateway are the agents on the
+    """The candidate PRODUCERS of a merging gateway are the agents on the
     branches that FLOW INTO it: every sequence flow whose target is the gateway, traced
     source node → owning lane → agentDiagramRef → Agent. This is what makes the vote
     BPMN-faithful — only the tasks feeding the merge author a candidate, regardless of
@@ -715,15 +715,12 @@ def _producer_agent_names(gateway_id, relationships, items_by_id, lane_ref,
 
 
 def _merge_state_for_gateway(agent, gateway_id) -> str:
-    """35b-5 / B1 — resolve the AgentState a governed gateway binds to (WME's W3
-    ``"Address merge decision"`` state), via the ``a2a:in;flow=<gateway-id>`` marker the
+    """Resolve the AgentState a governed gateway binds to via the ``a2a:in;flow=<gateway-id>`` marker the
     a2a parser stashes on ``agent._a2a['inbound']`` (each inbound edge carries ``flow`` =
     the gateway id and ``target_state`` = the state the guarded transition leads into).
 
     Returns the bound state name, or None when no inbound edge carries this gateway's
-    flow — i.e. the WME W3 binding is absent (the live frontend emits none of it today),
-    so governance falls back to the flat ``agent._governance`` list. Dormant per-state
-    keying: it feeds ``agent._governance_by_state`` until the WME contract lands.
+    flow, so governance falls back to the flat ``agent._governance`` list. It feeds ``agent._governance_by_state`` for per-state governance.
     """
     if not gateway_id:
         return None
@@ -735,21 +732,21 @@ def _merge_state_for_gateway(agent, gateway_id) -> str:
 
 
 def _attach_governance_to_agents(input_data, agent_models_by_id: dict) -> None:
-    """item 35 — map each agentic merging gateway's governanceDsl onto the BUML Agent
+    """Map each agentic merging gateway's governanceDsl onto the BUML Agent
     of its owning lane, as ``agent._governance`` (a list of summary dicts from
     summarize_governance). Mapping: gateway.owner (lane id) → lane.agentDiagramRef →
     agent_models_by_id key. No-op when there is no BPMN diagram, no gateway carries a
     governanceDsl, or the owning lane is unlinked/dangling.
 
-    item 37 — also stamps each summary with ``producers`` (the BPMN-derived candidate
+    Also stamps each summary with ``producers`` (the BPMN-derived candidate
     producers; see ``_producer_agent_names``) so the generator can run the star vote
     with producers and voters as decoupled sets.
 
-    35b-5 / B1 — when WME's W3 ``flow=`` binding is present, ALSO key the summary per
+    When WME's ``flow=`` binding is present, ALSO key the summary per
     merge STATE on ``agent._governance_by_state`` (so a lane owning several governed
     gateways governs each at its own state). The flat ``agent._governance`` list is kept
     as the back-compat fallback that the live (single-merge) render still reads, so an
-    agent without the W3 binding renders byte-for-byte as today.
+    agent without the per-state binding renders byte-for-byte as today.
     """
     # The project payload keys BPMN diagrams under "BPMN" (the WME export/request
     # short name); "BPMNDiagram" is the backend-internal discriminator used by the
@@ -773,7 +770,7 @@ def _attach_governance_to_agents(input_data, agent_models_by_id: dict) -> None:
             for el in items
             if isinstance(el, dict) and el.get("type") == "BPMNSwimlane"
         }
-        # 35b-5 / B3 routing — a producer's outbound A2A message must be dispatched to the
+        # a producer's outbound A2A message must be dispatched to the
         # right merge state on the owner. The producer's `a2a:out` carries the BPMN
         # SEQUENCE-FLOW id; that flow's TARGET is the governed gateway. Build {flow id →
         # governed gateway id} so each producer's outbound edge can be stamped with the
@@ -822,7 +819,7 @@ def _attach_governance_to_agents(input_data, agent_models_by_id: dict) -> None:
                 summary = build_default_summary(
                     summary.get("detected_policy_type"), participant_names, gov)
             summary["producers"] = producers
-            # 35b-5 / B1 — per-state keying when the W3 binding resolves (dormant until
+            # Per-state keying when the binding resolves (
             # WME emits flow=); purely additive, so the flat list below is unchanged.
             state_name = _merge_state_for_gateway(agent, el.get("id"))
             if state_name:
@@ -972,10 +969,10 @@ async def _handle_deployment_project_generation(
                 annotate_agent_with_a2a(agent_model, entry_dict)
                 agent_models_by_id[diagram_id] = agent_model
 
-        # item 35 — governance DSL → runtime. A merging gateway's governanceDsl is
+        # Governance DSL → runtime. A merging gateway's governanceDsl is
         # authored in the BPMN diagram and round-trips on AgenticGateway, but the
-        # compose path never loads the BPMN model (guide 10 §1.2). Read it from the
-        # raw BPMN JSON, parse it (guide 10 §3.0), and stash a runtime instruction on
+        # compose path never loads the BPMN model. Read it from the
+        # raw BPMN JSON, parse it, and stash a runtime instruction on
         # the agent whose lane owns the gateway, for injection into its synthesis.
         _attach_governance_to_agents(input_data, agent_models_by_id)
 

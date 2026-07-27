@@ -441,7 +441,7 @@ def work_body(session: Session):
 {% if a2a.peers %}
 {% if a2a.governance and a2a.governance.is_voting and not a2a.states %}
     # Governed candidate-selection vote.
-    # Phase 2: a human ballot is pending, so this message is the human's choice.
+    # A human ballot is pending, so this message is the human's choice.
     _pending = session.get("gov_pending")
     if GOVERNANCE_REQUIRES_HUMAN and _pending:
         session.delete("gov_pending")

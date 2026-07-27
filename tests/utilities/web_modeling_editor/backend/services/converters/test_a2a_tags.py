@@ -1,4 +1,4 @@
-"""Tests for the A2A wire-tag parser and the standalone annotation pass (item 10).
+"""Tests for the A2A wire-tag parser and the standalone annotation pass.
 
 - `parse_a2a_line` / `parse_a2a_out_block` are pure (no backend deps, base-runnable).
 - `annotate_agent_with_a2a` over a real `process_agent_diagram(json)` agent needs the

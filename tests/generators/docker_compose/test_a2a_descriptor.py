@@ -18,7 +18,7 @@ class _A:
 
 
 def test_self_referential_from_does_not_demote_entry():
-    # Supervisor with a stray self-referential `from_supervisor` (item 22) + a real
+    # Supervisor with a stray self-referential `from_supervisor` + a real
     # outbound `to_coder`. It must stay an ENTRY, and the self-from must be ignored.
     sup = _A('Supervisor', ['coordinate_work', 'from_supervisor', 'to_coder'])
     services = {'supervisor', 'coder', 'reviewer'}
@@ -135,7 +135,7 @@ def test_non_service_from_human_is_ignored():
 
 
 # ---------------------------------------------------------------------------
-# item 10 — `peers` shim on the legacy descriptor (template single-path)
+# `peers` shim on the legacy descriptor (template single-path)
 # ---------------------------------------------------------------------------
 
 def test_legacy_descriptor_emits_plain_channel_peers_shim():
@@ -149,7 +149,7 @@ def test_legacy_descriptor_emits_plain_channel_peers_shim():
 
 
 # ---------------------------------------------------------------------------
-# item 10 — tag-aware descriptor (_a2a_descriptor_from_tags)
+# tag-aware descriptor (_a2a_descriptor_from_tags)
 # ---------------------------------------------------------------------------
 
 def _tagged(name, outbound=None, inbound=None):
@@ -213,7 +213,7 @@ def test_resolve_peer_service_by_name():
 
 
 # ---------------------------------------------------------------------------
-# item 37 — governed voting owner fans out to the PRODUCER ∪ VOTER star, with
+# governed voting owner fans out to the PRODUCER ∪ VOTER star, with
 # producers (BPMN flows into the gateway) and voters (policy participants) decoupled.
 # ---------------------------------------------------------------------------
 
@@ -320,7 +320,7 @@ def test_no_governance_descriptor_unchanged():
 
 
 def test_synthesized_default_policy_forms_a_star_with_unit_weights():
-    # Phase 1 — a default policy synthesized for an unparseable .gov carries participants
+    # a default policy synthesized for an unparseable .gov carries participants
     # with confidence None (no author weights). The star must still form, each voter
     # weighted 1.0 (the _governance_star confidence fallback).
     from besser.utilities.web_modeling_editor.backend.services.governance.govdsl_runtime import (
@@ -353,7 +353,7 @@ def test_governed_voting_star_via_tags_path():
 
 
 # ---------------------------------------------------------------------------
-# 35b-5 / B2 — state-aware descriptor. When WME's W3 binding keys governance per merge
+# State-aware descriptor. When per-state binding keys governance per merge
 # STATE (agent._governance_by_state), the descriptor grows a `states[]` list, one star
 # per merge state (reusing _governance_star). DORMANT: the live template never reads
 # `states`, so a legacy agent (no per-state binding) carries `states == []` and renders
@@ -426,7 +426,7 @@ def test_states_via_tags_path_carries_guards():
 
 
 # ---------------------------------------------------------------------------
-# 35b-5 / B3 — routing keys: each merge state carries its dispatch key (merge_key =
+# routing keys: each merge state carries its dispatch key (merge_key =
 # gateway id) + a Python-literal merge_config; the descriptor bakes the engine once and
 # flags producer agents (has_merge_targets); the producer's peer carries target_gateway.
 # ---------------------------------------------------------------------------
@@ -485,7 +485,7 @@ def test_legacy_agent_has_no_merge_targets_and_no_engine():
 
 
 # ---------------------------------------------------------------------------
-# 35b-5 entry un-flatten — merge_sends is the ORDERED, NON-deduped pipeline of governed
+# merge_sends is the ORDERED, NON-deduped pipeline of governed
 # merges a producer feeds. Two edges to the SAME owner (two gateways) must stay TWO sends.
 # ---------------------------------------------------------------------------
 

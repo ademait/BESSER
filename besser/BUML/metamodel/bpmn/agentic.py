@@ -127,9 +127,8 @@ class AgenticTask(Task):
             meaning «AgenticTask» without a reflective loop).
         trust_score (int): The trust score, 0-100 (default 0).
         agent_diagram_ref (str | None): Opaque id of the AgentDiagram this
-            task's agent behavior is defined by (SEAA'25 cross-diagram link,
-            WME guide 11). Default None. Pass-through -- no UUID validation,
-            no resolution. Canonical carrier.
+            task's agent behavior is defined by. Default None. Pass-through --
+            no UUID validation, no resolution. Canonical carrier.
         task_type (TaskType): Inherited from Task.
         loop_characteristics (LoopCharacteristics): Inherited from Activity.
         layout (dict): Inherited (opaque DI passthrough).
@@ -190,8 +189,8 @@ class AgenticTask(Task):
     @property
     def agent_diagram_ref(self):
         """str | None: Get the opaque id of the AgentDiagram this task's agent
-        behavior is defined by (SEAA'25 cross-diagram link, WME guide 11 --
-        canonical carrier). ``None`` when unset."""
+        behavior is defined by. This is the canonical task-to-agent carrier.
+        ``None`` when unset."""
         return self.__agent_diagram_ref
 
     @agent_diagram_ref.setter
@@ -369,11 +368,11 @@ class AgenticLane(Lane):
         role (AgentRole): The profile role (default WORKER).
         trust_score (int): 0-100 (default 0).
         agent_diagram_ref (str | None): Opaque id of the AgentDiagram this
-            lane's agent is defined by (SEAA'25 cross-diagram link, WME 08).
-            Default None. Pass-through -- no UUID validation, no resolution.
+            lane's agent is defined by. Default None. Pass-through -- no UUID
+            validation, no resolution.
         swarm_size (int): Swarm size — how many identical copies of this
             lane's agent participate (>= 1, default 1). Flows to the Deployment
-            artifact ``[N]``. WME meeting 2026-06-08 point #3.
+            artifact ``[N]``.
         flow_nodes (set[FlowNode]): Inherited from Lane.
         layout (dict): Inherited.
         metadata, timestamp: Inherited.
@@ -447,11 +446,11 @@ class AgenticLane(Lane):
     @property
     def agent_diagram_ref(self):
         """str | None: Get the opaque id of the AgentDiagram this lane's agent
-        is defined by (SEAA'25 cross-diagram link, WME 08). ``None`` when unset.
+        is defined by. ``None`` when unset.
 
-        **Legacy carrier.** WME guide 11 moved the canonical task->agent link to
+        **Legacy carrier.** The canonical task-to-agent link is
         ``AgenticTask.agent_diagram_ref``; this lane field is retained only for
-        round-tripping legacy projects. New links should be authored on
+        round-tripping older projects. New links should be authored on
         ``AgenticTask``."""
         return self.__agent_diagram_ref
 

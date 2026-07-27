@@ -310,11 +310,11 @@ def test_all_localities_produce_valid_yaml(tmp_path, locality):
 
 
 # ---------------------------------------------------------------------------
-# A1 end-to-end: Artifact named "Foo [3]" in WME JSON → replicas: 3
+# End-to-end: Artifact named "Foo [3]" in WME JSON → replicas: 3
 # ---------------------------------------------------------------------------
 
 def test_a1_end_to_end_bracket_n_to_replicas(tmp_path):
-    """A1 (memo §4): artifact named 'Foo [3]' in WME JSON →
+    """Artifact named 'Foo [3]' in WME JSON →
     process_deployment_diagram parses [3] → DeploymentRelation.multiplicity.max=3
     → generated compose contains deploy: replicas: 3.
 
@@ -380,7 +380,7 @@ def test_a1_end_to_end_bracket_n_to_replicas(tmp_path):
 
 
 # ---------------------------------------------------------------------------
-# 6b-2 — agent baking tests (the load-bearing test for this feature)
+# Agent baking tests
 # ---------------------------------------------------------------------------
 
 @pytest.fixture
@@ -394,7 +394,7 @@ def _researcher_agent():
 
 
 def test_baking_produces_build_context(tmp_path, _researcher_agent):
-    """6c — LOCAL artifact with resolvable agent_model_ref gets a baked build context."""
+    """LOCAL artifact with resolvable agent_model_ref gets a baked build context."""
     node = Node("Cluster", kind=NodeKind.EXECUTION_ENVIRONMENT)
     art = Artifact("Researcher", locality=Locality.LOCAL)
     art.agent_model_ref = "agent-1"
@@ -423,7 +423,7 @@ def test_baking_produces_build_context(tmp_path, _researcher_agent):
 
 
 def test_baking_skips_artifact_without_agent_ref(tmp_path, _researcher_agent):
-    """6c — LOCAL artifact with no agent_model_ref gets no Dockerfile baked."""
+    """LOCAL artifact with no agent_model_ref gets no Dockerfile baked."""
     node = Node("Cluster", kind=NodeKind.EXECUTION_ENVIRONMENT)
     agentic = Artifact("Researcher", locality=Locality.LOCAL)
     agentic.agent_model_ref = "agent-1"
@@ -447,7 +447,7 @@ def test_baking_skips_artifact_without_agent_ref(tmp_path, _researcher_agent):
 
 
 def test_baking_no_op_when_agent_models_empty(tmp_path):
-    """6c back-compat — empty agent_models_by_id (6a path) produces only compose."""
+    """Back-compat: empty agent_models_by_id produces only compose."""
     node = Node("Host", kind=NodeKind.DEVICE)
     art = Artifact("svc", locality=Locality.LOCAL)
     dr = DeploymentRelation(art, node)
@@ -463,7 +463,7 @@ def test_baking_no_op_when_agent_models_empty(tmp_path):
 
 
 def test_baking_no_op_when_no_agent_models_arg(tmp_path):
-    """6c back-compat — 2-arg constructor (default agent_models_by_id=None) still works."""
+    """Back-compat: 2-arg constructor (default agent_models_by_id=None) still works."""
     node = Node("Host", kind=NodeKind.DEVICE)
     art = Artifact("svc", locality=Locality.LOCAL)
     dr = DeploymentRelation(art, node)
@@ -478,7 +478,7 @@ def test_baking_no_op_when_no_agent_models_arg(tmp_path):
 
 
 def test_baking_skips_unresolvable_ref(tmp_path):
-    """6c — artifact whose agent_model_ref has no match is skipped (no crash)."""
+    """Artifact whose agent_model_ref has no match is skipped (no crash)."""
     node = Node("Host", kind=NodeKind.DEVICE)
     art = Artifact("ghost", locality=Locality.LOCAL)
     art.agent_model_ref = "no-such-uuid"
@@ -496,7 +496,7 @@ def test_baking_skips_unresolvable_ref(tmp_path):
 
 
 # ---------------------------------------------------------------------------
-# item 10 — tag-driven A2A bake (per-kind framing rendered into <svc>/<Agent>.py)
+# Tag-driven A2A bake (per-kind framing rendered into <svc>/<Agent>.py)
 # ---------------------------------------------------------------------------
 
 def _agent_with_a2a(name, outbound=None, inbound=None):
@@ -616,7 +616,7 @@ def test_tag_baked_agent_py_is_valid_python(tmp_path):
 
 
 def test_convention_bake_unchanged_back_compat(tmp_path):
-    """Back-compat (§10): an agent with NO _a2a but to_/from_ states still bakes via the
+    """Back-compat: an agent with NO _a2a but to_/from_ states still bakes via the
     legacy path and renders the plain-channel fan-out (no kind framing strings)."""
     node = Node("Cluster", kind=NodeKind.EXECUTION_ENVIRONMENT)
     sup = Artifact("Supervisor", locality=Locality.LOCAL)
@@ -661,7 +661,7 @@ def test_convention_bake_unchanged_back_compat(tmp_path):
 
 
 # ---------------------------------------------------------------------------
-# Phase 3 — merge-path completions run at temperature 0, and the owner's own
+# Merge-path completions run at temperature 0, and the owner's own
 # ballot is validated (re-prompt) rather than trusted from a single completion.
 # ---------------------------------------------------------------------------
 
@@ -733,15 +733,15 @@ def test_human_facing_single_merge_owner_uses_ui_governance_path(tmp_path):
 
 
 # ---------------------------------------------------------------------------
-# Phase 4 — an agent owning >1 governed merging gateway wires only the first,
+# Legacy single-merge behavior: an agent owning >1 governed merging gateway wires only the first,
 # but the drop is now VISIBLE (warning) rather than silent.
 # ---------------------------------------------------------------------------
 
 def test_legacy_single_gateway_render_is_byte_identical(tmp_path):
-    """35b-5 byte-identity gate — an agent WITHOUT the WME W3 per-state binding
+    """Byte-identity gate: an agent WITHOUT per-state governance binding
     (``_governance_by_state``) must render via EXACTLY today's synthesized path. This
     golden locks the verified single-gateway governed render byte-for-byte, so the
-    dormant B1/B2 machinery (and the future B3 faithful render) cannot perturb it.
+    per-state machinery cannot perturb it.
 
     After an INTENTIONAL render change, regenerate the golden by re-running this test
     once with ``BESSER_REGEN_GOLDEN=1`` set (it rewrites the fixture, then passes).
@@ -755,7 +755,7 @@ def test_legacy_single_gateway_render_is_byte_identical(tmp_path):
         producers=["AgentCoder"])]
     coder = _agent_with_a2a("AgentCoder", inbound=[
         {"peer": "AgentSupervisor", "ref": "sup", "order": 9999, "kind": "delegates"}])
-    # No W3 binding on either agent → _governance_by_state never set → states == [].
+    # No per-state binding on either agent → _governance_by_state never set → states == [].
     assert not hasattr(supervisor, "_governance_by_state")
 
     gen = DockerComposeGenerator(
@@ -797,7 +797,7 @@ def test_multiple_governed_gateways_warns_and_wires_first(tmp_path, caplog):
 
 
 # ---------------------------------------------------------------------------
-# 35b-5 / B3+B4 — faithful per-merge governed dispatch. A W3-bound owner that owns
+# Faithful per-merge governed dispatch. A per-state-bound owner that owns
 # >1 governed merge renders a _MERGES registry (one config per gateway) and a handle()
 # that dispatches a PUSH-tagged message (flow == gateway id) to that merge's vote. The
 # producer tags its outbound message with the target gateway. No "wires only first" warning.
@@ -917,7 +917,7 @@ def test_faithful_producer_tags_flow_on_push(tmp_path):
 
 
 def test_unflatten_producer_threads_both_merges_sequentially(tmp_path):
-    """35b-5 entry un-flatten — the producer (an entry: no inbound) feeds TWO governed merges
+    """The producer (an entry: no inbound) feeds TWO governed merges
     on the SAME owner. The flattened single fan-out would collapse them; the faithful pipeline
     threads the task through BOTH in order, each PUSH-tagged with its own gateway."""
     import ast
@@ -939,7 +939,7 @@ def test_unflatten_producer_threads_both_merges_sequentially(tmp_path):
     exec("\n".join(buf), ns)
     assert ns["_MERGE_PIPELINE"] == [("owner", "gw1"), ("owner", "gw2")]
     # the entry work_body drives the pipeline (Producer has no inbound → entry/work_body):
-    # O1 inlines the stage loop so it can pause/resume for human approval mid-pipeline.
+    # The entry inlines the stage loop so it can pause/resume for human approval mid-pipeline.
     assert "_result, _stages = task, list(_MERGE_PIPELINE)" in prod_py
     assert "_result, _pending = _merge_send(_result, _service, _flow)" in prod_py
 
@@ -961,7 +961,7 @@ def test_unflatten_worker_initiator_threads_pipeline(tmp_path):
 
 
 def test_o1_entry_renders_hitl_pause_resume(tmp_path):
-    """35b-5 / O1 — an entry that drives a governed-merge pipeline renders the stateful
+    """An entry that drives a governed-merge pipeline renders the stateful
     HITL pause/resume: when a merge owner returns gov_pending (requires_human), the entry
     stashes the remaining pipeline, presents the slate, and finalizes on the human's NEXT
     message by adding their ballot and running the frozen tally. The machinery is static for

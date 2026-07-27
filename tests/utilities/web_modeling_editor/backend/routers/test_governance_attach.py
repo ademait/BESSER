@@ -1,4 +1,4 @@
-"""item 37 — the candidate PRODUCERS of a merging gateway are derived from the BPMN
+"""The candidate PRODUCERS of a merging gateway are derived from the BPMN
 sequence flows that flow INTO it (source task → owning lane → agent), decoupled from
 the policy's voter list. Covers ``_producer_agent_names``."""
 # Prime the backend `services` package before the router so its __init__ resolves the
@@ -78,7 +78,7 @@ def test_dangling_source_is_skipped():
 
 
 # ---------------------------------------------------------------------------
-# Phase 1 — an unparseable .gov on a gateway is recovered into a real,
+# an unparseable .gov on a gateway is recovered into a real,
 # type-preserving DEFAULT policy over the collaboration participants
 # (gateway owner + the agents flowing into it). Covers _attach_governance_to_agents.
 # ---------------------------------------------------------------------------
@@ -142,7 +142,7 @@ def test_unparseable_gov_without_keyword_defaults_to_majority():
 
 
 # ---------------------------------------------------------------------------
-# 35b-5 / B1 — when WME emits the W3 `flow=` binding, governance is ALSO keyed per
+# When WME emits the `flow=` binding, governance is ALSO keyed per
 # merge STATE (agent._governance_by_state); the flat list stays as back-compat fallback.
 # The live frontend emits none of this yet, so the per-state path is dormant: an agent
 # without the binding falls back to the flat list exactly as before.
@@ -221,7 +221,7 @@ def test_multi_gateway_agent_keys_each_merge_state():
 
 
 # ---------------------------------------------------------------------------
-# 35b-5 / B3 routing — a producer's outbound A2A edge is stamped with the GOVERNED gateway
+# a producer's outbound A2A edge is stamped with the GOVERNED gateway
 # its BPMN sequence flow feeds (`target_gateway`), so the producer tags its PUSH message and
 # the owner dispatches it to the right merge. The per-state summary records its gateway id.
 # ---------------------------------------------------------------------------

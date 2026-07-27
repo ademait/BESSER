@@ -13,8 +13,8 @@ Two entry points:
 Design points (mirror of the processor):
 
 * **Stable round-trip ids.** ``id_for(obj)`` reuses the original WME id stashed in
-  ``obj.layout["id"]`` when present, falling back to a fresh uuid. This is the §6 / D5-Q4
-  mechanism — the metamodel stays id-free; ``layout`` is the per-element side-channel.
+  ``obj.layout["id"]`` when present, falling back to a fresh uuid. The metamodel
+  stays id-free; ``layout`` is the per-element side-channel.
 * **Layout fallback.** When ``layout`` is missing / partial (a freshly-built model, or
   one loaded from BUML code that didn't emit layout), a deterministic grid layout fills
   the gaps; flow paths reuse ``services.utils.layout_calculator``.
