@@ -47,6 +47,7 @@ from besser.utilities.web_modeling_editor.backend.services.converters import (
     process_quantum_diagram,
     process_nn_diagram,
     process_bpmn_diagram,
+    process_deployment_diagram,
 )
 from besser.utilities.web_modeling_editor.backend.constants.user_buml_model import (
     domain_model as user_reference_domain_model,
@@ -483,6 +484,16 @@ async def generate_code_output_from_project(input_data: ProjectInput):
     # Handle Web App generator (requires both ClassDiagram and GUINoCodeDiagram)
     if generator_type == "web_app":
         return await _handle_web_app_project_generation(input_data, generator_info, config)
+    
+    # Deployment generation must run at project scope so AgentDiagrams are
+    # available for baking agent source files into the ZIP.
+    if generator_info.category == "deployment":
+        return await _handle_deployment_project_generation(
+            input_data,
+            generator_info,
+            config,
+            generator_type,
+        )
 
     # Handle generators that consume a non-class diagram (Qiskit → quantum,
     # PyTorch/TensorFlow → neural network). The required diagram type comes
@@ -590,6 +601,15 @@ async def generate_code_output(input_data: DiagramInput):
                 )
 
             return await _handle_object_diagram_generation(
+                json_data,
+                generator_type,
+                generator_info,
+                input_data.config,
+                temp_dir,
+            )
+
+        if generator_info.category == "deployment":
+            return await _handle_deployment_diagram_generation(
                 json_data,
                 generator_type,
                 generator_info,
@@ -1343,6 +1363,34 @@ async def _generate_jsonschema(buml_model, generator_class, config: dict, temp_d
         )
     else:
         return _create_file_response(temp_dir, "jsonschema")
+
+
+async def _handle_deployment_diagram_generation(
+    json_data: dict,
+    generator_type: str,
+    generator_info,
+    config: dict,
+    temp_dir: str,
+):
+    """Handle generators that consume a UML DeploymentModel (category='deployment').
+
+    Shared by all UML-Deployment generators (DockerComposeGenerator, and future
+    Terraform extension). Processes the WME DeploymentDiagram JSON via
+    ``process_deployment_diagram``, instantiates the generator, and returns a
+    file or ZIP response depending on ``generator_info.output_type``.
+    """
+    try:
+        deployment_model = process_deployment_diagram(json_data)
+    except (KeyError, TypeError, AttributeError) as exc:
+        raise ConversionError(f"Malformed Deployment diagram payload: {exc}") from exc
+
+    generator_class = generator_info.generator_class
+    generator_instance = generator_class(deployment_model, output_dir=temp_dir)
+    await asyncio.to_thread(generator_instance.generate)
+
+    if generator_info.output_type == "zip":
+        return _create_zip_response(temp_dir, generator_type)
+    return _create_file_response(temp_dir, generator_type)
 
 
 async def _generate_nn(json_data: dict, generator_type: str, generator_class, config: dict, temp_dir: str):
