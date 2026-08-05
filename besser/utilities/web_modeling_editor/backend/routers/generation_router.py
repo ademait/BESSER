@@ -485,9 +485,9 @@ async def generate_code_output_from_project(input_data: ProjectInput):
     if generator_type == "web_app":
         return await _handle_web_app_project_generation(input_data, generator_info, config)
     
-    # Deployment generation must run at project scope so AgentDiagrams are
+    # Docker Compose generation runs at project scope so AgentDiagrams are
     # available for baking agent source files into the ZIP.
-    if generator_info.category == "deployment":
+    if generator_type == "docker_compose":
         return await _handle_deployment_project_generation(
             input_data,
             generator_info,
@@ -608,7 +608,7 @@ async def generate_code_output(input_data: DiagramInput):
                 temp_dir,
             )
 
-        if generator_info.category == "deployment":
+        if generator_type == "docker_compose":
             return await _handle_deployment_diagram_generation(
                 json_data,
                 generator_type,
@@ -949,23 +949,21 @@ def _attach_entry_role_to_agents(input_data, agent_models_by_id: dict) -> None:
 async def _handle_deployment_project_generation(
     input_data: ProjectInput, generator_info, config: dict, generator_type: str
 ):
-    """6b-2 — deployment generation WITH the project's AgentDiagrams in scope,
-    so the docker_compose generator can bake a BAF build context per agentic
-    artifact. Builds {AgentDiagram-uuid → Agent BUML model} and hands it to the
-    generator, which resolves each Artifact.agent_model_ref against it.
+    """Generate Docker Compose output with the project's AgentDiagrams in scope.
 
-    Always returns a ZIP (the output is a tree: compose + per-agent build
-    contexts), regardless of generator_info.output_type.
+    Resolves Artifact.agent_model_ref values against AgentDiagram IDs, so each
+    linked local artifact can receive a baked BAF build context. The response is
+    always a ZIP containing docker-compose.yml and any generated agent contexts.
     """
     deployment_diagram = input_data.get_active_diagram("DeploymentDiagram")
     if not deployment_diagram:
         raise HTTPException(
             status_code=400,
-            detail="DeploymentDiagram is required for the deployment generator",
+            detail="DeploymentDiagram is required for the Docker Compose generator",
         )
 
     with tempfile.TemporaryDirectory(prefix=TEMP_DIR_PREFIX) as temp_dir:
-        # Mirror the single-diagram deployment path's conversion call shape.
+         # Mirror the single-diagram Docker Compose conversion call shape.
         deployment_model = process_deployment_diagram(deployment_diagram.model_dump())
 
         # Resolver map: AgentDiagram.id → BUML Agent. Keyed by *diagram id*
@@ -1372,12 +1370,12 @@ async def _handle_deployment_diagram_generation(
     config: dict,
     temp_dir: str,
 ):
-    """Handle generators that consume a UML DeploymentModel (category='deployment').
+    """Generate Docker Compose from a single UML DeploymentDiagram.
 
-    Shared by all UML-Deployment generators (DockerComposeGenerator, and future
-    Terraform extension). Processes the WME DeploymentDiagram JSON via
-    ``process_deployment_diagram``, instantiates the generator, and returns a
-    file or ZIP response depending on ``generator_info.output_type``.
+    Single-diagram generation has no project-level AgentDiagram resolver, so it
+    returns docker-compose.yml only. Project generation uses
+    ``_handle_deployment_project_generation`` to bake linked agent contexts and
+    returns a ZIP.
     """
     try:
         deployment_model = process_deployment_diagram(json_data)

@@ -36,6 +36,9 @@ from besser.BUML.metamodel.uml_component.agentic import (
     AgenticComponent,
 )
 from besser.BUML.metamodel.uml_deployment import DeploymentModel
+from besser.utilities.web_modeling_editor.backend.services.converters.buml_to_json.project_converter import project_to_json
+
+
 
 API = "/besser_api"
 BASE_URL = "http://testserver"
@@ -321,3 +324,15 @@ class TestExportProjectAllThree:
         # All three metamodel roots are reconstructable from the same file.
         assert _models_of(ns, ComponentModel), "ComponentModel missing in project export"
         assert _models_of(ns, DeploymentModel), "DeploymentModel missing in project export"
+
+        # The exported project must also import back into both WME diagram families.
+        imported_project = project_to_json(source)
+        imported_diagrams = imported_project["diagrams"]
+
+        component_model = imported_diagrams["ComponentDiagram"][0]["model"]
+        deployment_model = imported_diagrams["DeploymentDiagram"][0]["model"]
+
+        assert component_model["type"] == "ComponentDiagram"
+        assert deployment_model["type"] == "DeploymentDiagram"
+        assert component_model["elements"]
+        assert deployment_model["elements"]
