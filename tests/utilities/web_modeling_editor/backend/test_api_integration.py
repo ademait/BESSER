@@ -1194,6 +1194,44 @@ class TestDockerComposeRouting:
 
         assert result == "docker-compose-project-handler"
 
+    def test_project_docker_compose_maps_governance_dsl_validation_to_422(self, monkeypatch):
+        from fastapi import HTTPException
+        from besser.utilities.web_modeling_editor.backend.routers import (
+            generation_router as router,
+        )
+        from besser.utilities.web_modeling_editor.backend.services.exceptions import (
+            GovernanceDslValidationError,
+        )
+
+        async def fake_project_handler(*_args, **_kwargs):
+            raise GovernanceDslValidationError(
+                "Invalid Governance DSL on merging gateway 'gw1': "
+                "Governance DSL syntax error: line 1:8 mismatched input"
+            )
+
+        monkeypatch.setattr(
+            router,
+            "_handle_deployment_project_generation",
+            fake_project_handler,
+        )
+
+        project = self._project_input(
+            "docker_compose",
+            "DeploymentDiagram",
+            {
+                "type": "DeploymentDiagram",
+                "elements": {},
+                "relationships": {},
+            },
+        )
+
+        with pytest.raises(HTTPException) as exc_info:
+            _run(router.generate_code_output_from_project(project))
+
+        assert exc_info.value.status_code == 422
+        assert "merging gateway 'gw1'" in exc_info.value.detail
+        assert "syntax error" in exc_info.value.detail
+
     def test_project_terraform_bypasses_project_handler(
         self, monkeypatch, class_diagram_model
     ):

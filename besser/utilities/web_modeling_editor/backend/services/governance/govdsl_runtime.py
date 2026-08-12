@@ -1,12 +1,11 @@
-"""Parse a WME-authored governance .gov snippet at generation time and`r`nproduce a runtime instruction for the synthesizing agent.
-
-Parsing runs HERE (BESSER backend), not in the agent container: the container only
-receives the resulting instruction string. The govdsl metamodel is BESSER-BUML based,
-so the parser imports cleanly wherever besser.BUML is importable. Any failure (bad
-user edit, missing parser package) degrades to a raw-text instruction (Option B).
-"""
+"""Parse a WME-authored Governance DSL snippet during Docker Compose generation."""
+import io
 import logging
-import re
+
+from besser.utilities.web_modeling_editor.backend.services.exceptions import (
+    ConfigurationError,
+    GovernanceDslValidationError,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -14,26 +13,6 @@ logger = logging.getLogger(__name__)
 # docker_compose_generator._VOTING_POLICIES. Non-voting policies (leader/consensus/lazy)
 # have NO vote, so their merge instruction must not ask the LLM to narrate one.
 _VOTING_POLICY_TYPES = frozenset(("VotingPolicy", "MajorityPolicy", "AbsoluteMajorityPolicy"))
-
-# Policy-type keywords as they appear verbatim in a .gov snippet (the govdsl grammar's
-# `policyType` alternatives). Ordered longest-first so a substring keyword cannot shadow a
-# longer one (e.g. AbsoluteMajorityPolicy must win over MajorityPolicy, LazyConsensusPolicy
-# over ConsensusPolicy). Used to recover the author's intended type when the FULL ANTLR
-# parse fails — the keyword survives even when the body does not (the most common failure
-# is the missing //-comment lexer rule, which leaves the type keyword intact).
-_POLICY_TYPE_KEYWORDS = (
-    "AbsoluteMajorityPolicy",
-    "LazyConsensusPolicy",
-    "LeaderDrivenPolicy",
-    "ConsensusPolicy",
-    "MajorityPolicy",
-    "VotingPolicy",
-)
-
-# Documented default ratio for the voting family — mirrors the MajorityPolicy rule text
-# below and the in-container tally()'s own fallback threshold. Non-voting policies carry
-# no ratio.
-_DEFAULT_RATIO = 0.5
 
 # Per-policy-type decision rule, in plain language for the LLM (the "concepts").
 _POLICY_RULES = {
@@ -52,84 +31,56 @@ _POLICY_RULES = {
 }
 
 
-def _detect_policy_type(text: str):
-    """Scan raw .gov text for a policy-type keyword; return the class name or None.
-
-    Word-boundary matched and longest-first (see ``_POLICY_TYPE_KEYWORDS``) so the
-    detected type is the author's intended one even when the surrounding policy fails
-    to parse.
-    """
-    if not text:
-        return None
-    for kw in _POLICY_TYPE_KEYWORDS:
-        if re.search(r"\b" + kw + r"\b", text):
-            return kw
-    return None
-
-
-def build_default_summary(policy_type, participant_names, raw_text=""):
-    """Synthesize a policy summary of ``policy_type`` over ``participant_names``, shaped
-    EXACTLY like a parsed-policy summary so it flows through the identical star
-    fan-out + deterministic tally path.
-
-    Used when a .gov snippet fails to parse: rather than degrade to a raw-text directive
-    (which produces no real vote and silently forces requires_human=False), the caller —
-    which knows the BPMN collaboration participants — builds a genuine, type-preserving
-    default policy here. ``policy_type`` is the type recovered from the raw text by
-    :func:`_detect_policy_type` (None → MajorityPolicy). Participants are the collaboration
-    agents, so the policy needs no human and gets the voting family's documented default
-    ratio (None for non-voting types).
-    """
-    ptype = policy_type or "MajorityPolicy"
-    ratio = _DEFAULT_RATIO if ptype in _VOTING_POLICY_TYPES else None
-    participants = [{"name": n, "kind": "agent", "confidence": None, "roles": []}
-                    for n in participant_names]
-    summary = {
-        "policy_type": ptype,
-        "ratio": ratio,
-        "decision_type": None,
-        "participants": participants,
-        "requires_human": False,
-    }
-    human_summary, instruction = _build_instruction(summary)
-    return {
-        "instruction": instruction,
-        "summary": human_summary,
-        "requires_human": False,
-        "policy_type": ptype,
-        "participants": participants,
-        "ratio": ratio,
-        "raw": raw_text,
-        # Marks this as a generation-time synthesized default (not author-authored), so
-        # downstream logs/tests can tell the two apart.
-        "synthesized_default": True,
-    }
-
-
 def _strip_comments(text: str) -> str:
     # The govdsl grammar has no LINE_COMMENT rule; WME emits `//` headers.
     # Strip them so the parse succeeds regardless of the upstream grammar fix.
     return "\n".join(ln for ln in text.splitlines() if not ln.lstrip().startswith("//"))
 
-
 def _parse_policies(text: str):
-    """Run the real govdsl parser. Returns a list[Policy] or raises."""
-    # These imports require the governanceDSL package on sys.path (Step 4 / §packaging).
-    from antlr4 import InputStream, CommonTokenStream, ParseTreeWalker
-    from grammar.govdslLexer import govdslLexer
-    from grammar.govdslParser import govdslParser
-    from grammar.PolicyCreationListener import PolicyCreationListener
+    """Run the published GovernanceDSL parser and return policy metamodel objects."""
+    try:
+        from antlr4 import CommonTokenStream, InputStream, ParseTreeWalker
+        from governancedsl.grammar.govdslLexer import govdslLexer
+        from governancedsl.grammar.govdslParser import govdslParser
+        from governancedsl.grammar.PolicyCreationListener import PolicyCreationListener
+        from governancedsl.grammar.govErrorListener import govErrorListener
+    except ImportError as exc:
+        raise ConfigurationError(
+            "Governance DSL parser dependency is unavailable; install governancedsl==0.1.1."
+        ) from exc
 
     lexer = govdslLexer(InputStream(text))
-    parser = govdslParser(CommonTokenStream(lexer))
-    tree = parser.governance()
-    listener = PolicyCreationListener()
-    ParseTreeWalker().walk(listener, tree)
-    return listener.get_policies()
+    lexer.removeErrorListeners()
+    lexer_errors = govErrorListener(io.StringIO())
+    lexer.addErrorListener(lexer_errors)
 
+    parser = govdslParser(CommonTokenStream(lexer))
+    parser.removeErrorListeners()
+    parser_errors = govErrorListener(io.StringIO())
+    parser.addErrorListener(parser_errors)
+
+    tree = parser.governance()
+
+    syntax_error = lexer_errors.error_message or parser_errors.error_message
+    if syntax_error:
+        raise GovernanceDslValidationError(
+            f"Governance DSL syntax error: {syntax_error}"
+        )
+
+    try:
+        listener = PolicyCreationListener()
+        ParseTreeWalker().walk(listener, tree)
+        policies = listener.get_policies()
+        if not policies:
+            raise ValueError("no policies parsed")
+        return policies
+    except Exception as exc:
+        raise GovernanceDslValidationError(
+            f"Governance DSL validation error: {exc}"
+        ) from exc
 
 def _summarize_policy(policy) -> dict:
-    from metamodel.governance import Agent, Human, Role  # local import (same dep as parser)
+    from governancedsl.metamodel.governance import Agent, Human, Role
 
     ptype = type(policy).__name__
     participants, requires_human = [], False
@@ -215,61 +166,26 @@ def _build_instruction(summary: dict):
 
 
 def summarize_governance(dsl_text):
-    """Public entry. Returns a dict {instruction, summary, requires_human, policy_type,
-    raw} or None for empty input. Never raises.
-
-    `instruction` is the agent's system message (full, with the audit directive);
-    `summary` is the human-readable policy facts shown at the approval step.
-    """
+    """Return a structured governance summary, or None only for empty DSL text."""
     if not dsl_text or not dsl_text.strip():
         return None
-    cleaned = _strip_comments(dsl_text)
-    try:
-        policies = _parse_policies(cleaned)
-        if not policies:
-            raise ValueError("no policies parsed")
-        if len(policies) > 1:
-            # v1 models one merge point per gateway; a .gov declaring several top-level
-            # policies has only its first wired. Surface the drop instead of hiding it.
-            logger.warning("[governance] %d policies parsed from one gateway's DSL; v1 wires "
-                           "only the first (%s)", len(policies), type(policies[0]).__name__)
-        summary = _summarize_policy(policies[0])  # one merge point per gateway (v1)
-        human_summary, instruction = _build_instruction(summary)
-        return {
-            "instruction": instruction,
-            "summary": human_summary,
-            "requires_human": summary["requires_human"],
-            "policy_type": summary["policy_type"],
-            # the star fan-out + tally need the participant list (names +
-            # confidence weights) and the ratio. They were parsed but not surfaced.
-            "participants": summary["participants"],
-            "ratio": summary["ratio"],
-            "raw": dsl_text,
-        }
-    except Exception as exc:  # bad user edit / parser unavailable
-        detected = _detect_policy_type(dsl_text)
-        # Signal "unparseable" so the caller — which knows the BPMN collaboration
-        # participants — can synthesize a real, type-preserving DEFAULT policy
-        # (build_default_summary) that runs through the same vote + tally path. The
-        # raw-text instruction/summary below are kept only as a last-resort shape for
-        # any caller that ignores the `unparseable` signal.
-        logger.warning("[governance] parse failed (%s); will synthesize a default %s policy "
-                       "over the collaboration participants", exc, detected or "MajorityPolicy")
-        return {
-            "instruction": ("You are the merge point of an agent swarm. Apply the following "
-                            "governance policy (DSL) to combine the collaborators' replies "
-                            "into one result, then give the final answer.\n\n" + dsl_text),
-            # Fallback never sets requires_human, so the human-approval step (the only
-            # consumer of `summary`) won't fire; provide the key for template safety.
-            "summary": "Governance policy (could not be parsed; shown verbatim):\n" + dsl_text,
-            "requires_human": False,
-            "policy_type": None,
-            # no structured participants on the fallback path; a star vote
-            # is impossible without them, so the generator keeps the topology peers.
-            "participants": [],
-            "ratio": None,
-            "raw": dsl_text,
-            # The caller turns these into a default policy over the producers it traced.
-            "unparseable": True,
-            "detected_policy_type": detected,
-        }
+
+    policies = _parse_policies(_strip_comments(dsl_text))
+    if len(policies) > 1:
+        logger.warning(
+            "[governance] %d policies parsed from one gateway's DSL; v1 wires only the first (%s)",
+            len(policies),
+            type(policies[0]).__name__,
+        )
+
+    summary = _summarize_policy(policies[0])
+    human_summary, instruction = _build_instruction(summary)
+    return {
+        "instruction": instruction,
+        "summary": human_summary,
+        "requires_human": summary["requires_human"],
+        "policy_type": summary["policy_type"],
+        "participants": summary["participants"],
+        "ratio": summary["ratio"],
+        "raw": dsl_text,
+    }

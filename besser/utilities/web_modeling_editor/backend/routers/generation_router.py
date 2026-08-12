@@ -53,7 +53,6 @@ from besser.utilities.web_modeling_editor.backend.constants.user_buml_model impo
     domain_model as user_reference_domain_model,
 )
 from besser.utilities.web_modeling_editor.backend.services.governance.govdsl_runtime import (
-    build_default_summary,
     summarize_governance,
 )
 
@@ -120,6 +119,7 @@ from besser.utilities.web_modeling_editor.backend.services.exceptions import (
     ConversionError,
     GenerationError,
     ValidationError,
+    GovernanceDslValidationError,
 )
 
 logger = logging.getLogger(__name__)
@@ -820,24 +820,26 @@ def _attach_governance_to_agents(input_data, agent_models_by_id: dict) -> None:
             gov = el.get("governanceDsl")
             if not gov:
                 continue
+
+            gateway_name = el.get("name") or el.get("id") or "<unnamed>"
+            try:
+                summary = summarize_governance(gov)
+            except GovernanceDslValidationError as exc:
+                raise GovernanceDslValidationError(
+                    f"Invalid Governance DSL on merging gateway '{gateway_name}': {exc}"
+                ) from exc
+
+            if summary is None:
+                continue
+
             ref = lane_ref.get(el.get("owner"))
             agent = agent_models_by_id.get(ref) if ref else None
             if agent is None:
                 continue
-            summary = summarize_governance(gov)
-            if summary is None:
-                continue
+
             producers = _producer_agent_names(
-                el.get("id"), rels, items_by_id, lane_ref, agent_models_by_id)
-            if summary.get("unparseable"):
-                # A broken .gov would otherwise degrade to a no-op raw-text directive.
-                # Recover the author's intended policy type from the raw text and build a
-                # REAL default policy over the collaboration participants — the gateway
-                # owner plus the agents whose branches flow into it (the traced producers)
-                # — so the merge still runs a genuine vote + deterministic tally.
-                participant_names = list(dict.fromkeys(producers + [agent.name]))
-                summary = build_default_summary(
-                    summary.get("detected_policy_type"), participant_names, gov)
+                el.get("id"), rels, items_by_id, lane_ref, agent_models_by_id
+            )
             summary["producers"] = producers
             # Per-state keying when the binding resolves (
             # WME emits flow=); purely additive, so the flat list below is unchanged.

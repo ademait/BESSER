@@ -4,11 +4,14 @@ the policy's voter list. Covers ``_producer_agent_names``."""
 # Prime the backend `services` package before the router so its __init__ resolves the
 # generation_router ↔ github_deploy_api cycle in the order the app boots uses (importing
 # the router first would catch it partially initialized).
-import pytest  # noqa: E402
+import pytest
 
-import besser.utilities.web_modeling_editor.backend.services  # noqa: F401
+from besser.utilities.web_modeling_editor.backend.services.exceptions import (
+    GovernanceDslValidationError,
+)
+import besser.utilities.web_modeling_editor.backend.services
 
-from besser.utilities.web_modeling_editor.backend.routers.generation_router import (  # noqa: E402
+from besser.utilities.web_modeling_editor.backend.routers.generation_router import (
     _attach_entry_role_to_agents,
     _attach_governance_to_agents,
     _merge_state_for_gateway,
@@ -20,7 +23,27 @@ class _Agent:
     def __init__(self, name):
         self.name = name
 
-
+_VALID_GOVERNANCE_DSL = """\
+// WME-generated header
+Scopes:
+    Tasks :
+        mergeTask
+Participants:
+    Individuals :
+        (Agent) Coder {
+            confidence : 0.8
+        },
+        (Agent) Reviewer {
+            confidence : 0.6
+        }
+MajorityPolicy mergePolicy {
+    Scope: mergeTask
+    DecisionType as BooleanDecision
+    Participant list : Coder, Reviewer
+    Parameters:
+        ratio : 0.5
+}
+"""
 # A tiny BPMN: coder-lane task and reviewer-lane task both flow into the merging
 # gateway (owned by the reviewer lane). Producers must be {AgentCoder, AgentReviewer}.
 GW = "gw1"
@@ -77,11 +100,7 @@ def test_dangling_source_is_skipped():
     assert names == ["AgentCoder"]
 
 
-# ---------------------------------------------------------------------------
-# an unparseable .gov on a gateway is recovered into a real,
-# type-preserving DEFAULT policy over the collaboration participants
-# (gateway owner + the agents flowing into it). Covers _attach_governance_to_agents.
-# ---------------------------------------------------------------------------
+# Invalid Governance DSL is rejected before attachment; ungoverned gateways are no-ops.
 
 class _Input:
     """Minimal stand-in for ProjectInput: only `.diagrams` is read."""
@@ -114,33 +133,26 @@ def _attach_and_get_owner_gov(gov_text):
     return owner._governance[0]
 
 
-def test_unparseable_gov_builds_default_over_collaboration_participants():
-    gov = _attach_and_get_owner_gov("// hdr\nMajorityPolicy m broken {{{ not valid")
-    assert gov["synthesized_default"] is True
-    assert gov["policy_type"] == "MajorityPolicy"      # type recovered from the raw text
-    assert gov["ratio"] == 0.5
-    # participants = owner (AgentReviewer) + producers (AgentCoder, AgentReviewer)
-    assert {p["name"] for p in gov["participants"]} == {"AgentCoder", "AgentReviewer"}
-    # producers are still the BPMN branches into the gateway
-    assert sorted(gov["producers"]) == ["AgentCoder", "AgentReviewer"]
+def test_malformed_gateway_dsl_raises_with_gateway_context():
+    agents = {"refC": _Agent("AgentCoder"), "refR": _Agent("AgentReviewer")}
+
+    with pytest.raises(
+        GovernanceDslValidationError,
+        match=r"Invalid Governance DSL on merging gateway 'gw1'",
+    ):
+        _attach_governance_to_agents(
+            _bpmn_input("MajorityPolicy broken {{{"),
+            agents,
+        )
 
 
-@pytest.mark.parametrize("kw", [
-    "VotingPolicy", "MajorityPolicy", "AbsoluteMajorityPolicy",
-    "LeaderDrivenPolicy", "ConsensusPolicy", "LazyConsensusPolicy",
-])
-def test_unparseable_gov_preserves_each_policy_type(kw):
-    gov = _attach_and_get_owner_gov(f"// hdr\n{kw} p broken {{{{{{ nope")
-    assert gov["policy_type"] == kw
-    assert gov["synthesized_default"] is True
+def test_ungoverned_gateway_is_a_noop():
+    agents = {"refC": _Agent("AgentCoder"), "refR": _Agent("AgentReviewer")}
 
+    _attach_governance_to_agents(_bpmn_input(""), agents)
 
-def test_unparseable_gov_without_keyword_defaults_to_majority():
-    gov = _attach_and_get_owner_gov("totally unparseable, no keyword {{{")
-    assert gov["policy_type"] == "MajorityPolicy"
-    assert gov["synthesized_default"] is True
-
-
+    assert getattr(agents["refC"], "_governance", None) is None
+    assert getattr(agents["refR"], "_governance", None) is None
 # ---------------------------------------------------------------------------
 # When WME emits the `flow=` binding, governance is ALSO keyed per
 # merge STATE (agent._governance_by_state); the flat list stays as back-compat fallback.
@@ -148,8 +160,7 @@ def test_unparseable_gov_without_keyword_defaults_to_majority():
 # without the binding falls back to the flat list exactly as before.
 # ---------------------------------------------------------------------------
 
-GOV = "// hdr\nMajorityPolicy m broken {{{ not valid"   # recovers to a default policy
-
+GOV = _VALID_GOVERNANCE_DSL
 
 def _resolver_agent(inbound):
     a = _Agent("AgentReviewer")
@@ -191,7 +202,6 @@ def test_missing_w3_binding_falls_back_to_flat_list_only():
     _attach_governance_to_agents(_bpmn_input(GOV), agents)
     assert getattr(agents["refR"], "_governance_by_state", None) is None
     assert len(agents["refR"]._governance) == 1
-    assert owner["synthesized_default"] is True         # the recovered default still attaches
 
 
 def test_multi_gateway_agent_keys_each_merge_state():
